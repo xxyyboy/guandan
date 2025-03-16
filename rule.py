@@ -59,8 +59,11 @@ class Rules:
         if len(cards) != 6:
             return False
         counts = Counter(self.get_rank(card) for card in cards)
-        triples = [rank for rank, count in counts.items() if count == 3]
-        return len(triples) == 2 and self._is_consecutive(triples)
+        pairs = [rank for rank, count in counts.items() if count == 2]
+        # 需要恰好是 3 个对子，且必须连续
+        return len(pairs) == 3 and self._is_consecutive(pairs)
+
+
 
     def is_straight(self, cards):
         """顺子（必须 5 张，A 可作为 1）"""
@@ -171,7 +174,7 @@ if __name__ == "__main__":
     rules = Rules(level_card=None)
 
     # **测试各种牌型**
-    print(rules.is_valid_play(['小王', '小王', '大王', '大王']))  # ✅ True（天王炸）
+    print(rules.is_valid_play(['黑桃10' ,'黑桃10' ,'黑桃9', '梅花9' ,'黑桃8', '红桃8']))  # ✅ True（天王炸）
     print(rules.is_valid_play(['黑桃A', '红桃2', '方块3', '梅花4', '黑桃5']))  # ✅ True（顺子）
     print(rules.is_valid_play(['黑桃10', '黑桃J', '黑桃Q', '黑桃K', '黑桃A']))  # ✅ True（顺子）
 
