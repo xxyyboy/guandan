@@ -69,7 +69,12 @@ class GuandanGame:
         """让用户手动选择出牌"""
         while True:
             self.show_user_hand()
-            choice = input("\n请选择要出的牌（用空格分隔），或输入 `pass` 跳过： ").strip()
+            choice = input("\n请选择要出的牌（用空格分隔），或直接回车跳过： ").strip()
+
+            if choice == "":  # **回车等同于 pass**
+                print(f"玩家 {self.current_player + 1} Pass")
+                self.pass_count += 1
+                break
 
             if choice.lower() == "pass":
                 print(f"玩家 {self.current_player + 1} Pass")
@@ -116,5 +121,5 @@ class GuandanGame:
 
 if __name__ == "__main__":
     user_pos = int(input("请选择你的座位（1~4）："))
-    game = GuandanGame(level_card="2", user_player=user_pos)
+    game = GuandanGame(level_card=None, user_player=user_pos)
     game.play_game()
