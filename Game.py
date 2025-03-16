@@ -122,5 +122,5 @@ class GuandanGame:
 
 if __name__ == "__main__":
     user_pos = int(input("请选择你的座位（1~4）："))
-    game = GuandanGame(level_card=None, user_player=user_pos)
+    game = GuandanGame(level_card='5', user_player=user_pos)
     game.play_game()

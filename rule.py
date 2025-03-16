@@ -20,17 +20,19 @@ class Rules:
         if length == 1:
             return True  # 单张
         if length == 2:
-            return self.is_pair(cards) or self.is_rocket(cards)  # 对子 or 王炸
+            return self.is_pair(cards)  # 只保留对子
         if length == 3:
             return self.is_triple(cards)  # 三同张
         if length == 4:
-            return self.is_king_bomb(cards) or self.is_bomb(cards)  # 天王炸 or 炸弹
+            return self.is_king_bomb(cards) or self.is_bomb(cards)  # 天王炸 or 4 炸
         if length == 5:
             return self.is_straight(cards) or self.is_flush_straight(cards) or self.is_three_with_two(
-                cards)  # 顺子 / 同花顺 / 三带二
+                cards) or self.is_bomb(cards)  # 顺子 / 同花顺 / 三带二
         if length == 6:
-            return self.is_triple_pair(cards) or self.is_triple_consecutive(cards)  # 连对（木板） or 三同连张（钢板）
-        return self.is_bomb(cards)  # 5 张及以上的炸弹
+            return self.is_triple_pair(cards) or self.is_triple_consecutive(cards) or self.is_bomb(cards)  # 连对（木板） / 钢板
+        if 6 < length <= 8:
+            return self.is_bomb(cards)
+        return False  # 其他情况不合法
 
     def is_pair(self, cards):
         """对子"""
@@ -150,10 +152,6 @@ class Rules:
         """判断是否为连续数字序列"""
         return all(ranks[i] == ranks[i - 1] + 1 for i in range(1, len(ranks)))
 
-
-
-
-
     def can_beat(self, previous_play, current_play):
         """判断当前出牌是否能压过上家"""
         if not self.is_valid_play(current_play):
@@ -164,14 +162,17 @@ class Rules:
         prev_type = self.get_play_type(previous_play)
         curr_type = self.get_play_type(current_play)
 
-        # 炸弹规则（能压制非炸弹）
-        bomb_order = ['天王炸', '大炸弹', '王炸', '炸弹']
+
+        # **修正炸弹牌力顺序**
+        bomb_order = ['天王炸', '8炸', '7炸', '6炸', '同花顺', '5炸', '4炸']
+
+        # **炸弹能压制非炸弹**
         if curr_type in bomb_order and prev_type not in bomb_order:
             return True
         if prev_type in bomb_order and curr_type in bomb_order:
             return bomb_order.index(curr_type) < bomb_order.index(prev_type)
 
-        # 牌型必须相同才能比较
+        # **牌型必须相同才能比较**
         if prev_type != curr_type:
             return False
 
@@ -181,10 +182,20 @@ class Rules:
         """获取牌型"""
         if self.is_king_bomb(cards):
             return '天王炸'
-        if self.is_rocket(cards):
-            return '王炸'
+        if self.is_flush_straight(cards):
+            return '同花顺'
         if self.is_bomb(cards):
-            return '炸弹' if len(cards) == 4 else '大炸弹'
+            size = len(cards)
+            if size == 4:
+                return '4炸'
+            elif size == 5:
+                return '5炸'
+            elif size == 6:
+                return '6炸'
+            elif size == 7:
+                return '7炸'
+            elif size == 8:
+                return '8炸'
         if self.is_triple_consecutive(cards):
             return '钢板'
         if self.is_triple_pair(cards):
@@ -213,45 +224,35 @@ if __name__ == "__main__":
     current_round = 2
     #rules = Rules(level_card=str(current_round))
     rules = Rules(level_card=None)
-    # ✅ 正确的同花顺
-    print(rules.is_flush_straight(['黑桃10', '黑桃J', '黑桃Q', '黑桃K', '黑桃A']))  # ✅ True（同花顺）
-    print(rules.is_flush_straight(['红桃A', '红桃2', '红桃3', '红桃4', '红桃5']))  # ✅ True（A2345 同花顺）
 
-    # ❌ 错误情况
-    print(rules.is_flush_straight(['黑桃10', '红桃J', '黑桃Q', '黑桃K', '黑桃A']))  # ❌ False（花色不同）
-    print(rules.is_valid_play(['黑桃A', '黑桃3', '黑桃4', '黑桃5', '黑桃6']))  # ❌ False（顺子不连续）
+    print(rules.can_beat(['黑桃6', '红桃6', '方块6', '梅花6', '梅花6'],
+                         ['黑桃10', '黑桃J', '黑桃Q', '黑桃K', '黑桃A']))
 
-    # ✅ 正确的连对（木板）
-    print(rules.is_valid_play(['黑桃10', '红桃10', '黑桃9', '梅花9', '黑桃8', '红桃8']))  # ✅ True（连对）
-    print(rules.is_valid_play(['黑桃A', '红桃A', '黑桃2', '红桃2', '黑桃3', '红桃3']))  # ✅ True（A=1）
+    '''
+    prev_type = rules.get_play_type(['黑桃6', '红桃6', '方块6', '梅花6', '黑桃6'])  # 5炸
+    curr_type = rules.get_play_type(['黑桃10', '黑桃J', '黑桃Q', '黑桃K', '黑桃A'])  # 同花顺
 
-    # ✅ 正确的三同连张（钢板）
-    print(rules.is_valid_play(['黑桃A', '红桃A', '方块A', '黑桃2', '红桃2', '方块2']))  # ✅ True（AAA222）
-    print(rules.is_valid_play(['黑桃5', '红桃5', '方块5', '黑桃6', '红桃6', '方块6']))  # ✅ True（555666）
+    bomb_order = ['天王炸', '8炸', '7炸', '6炸', '同花顺', '5炸', '4炸']
+    print(f"5炸排名: {bomb_order.index(prev_type)}, 同花顺排名: {bomb_order.index(curr_type)}")
+    print(rules.get_play_type(['黑桃10', '黑桃J', '黑桃Q', '黑桃K', '黑桃A']))  # ✅ True（同花顺）
+    print(rules.get_play_type(['黑桃6', '红桃6', '方块6', '梅花6', '黑桃6']))
+    print(rules.get_play_type(['红桃6', '方块6', '梅花6', '黑桃6', '红桃6', '黑桃6']))
 
-    # ✅ 正确的顺子
-    print(rules.is_valid_play(['黑桃A', '红桃2', '方块3', '梅花4', '黑桃5']))  # ✅ True（A2345）
-    print(rules.is_valid_play(['黑桃10', '红桃J', '方块Q', '梅花K', '黑桃A']))  # ✅ True（10JQKA）
+    # ✅ 正确识别同花顺
+    print(rules.get_play_type(['黑桃10', '黑桃J', '黑桃Q', '黑桃K', '黑桃A']))  # ✅ True（同花顺）
+    print(rules.get_play_type(['黑桃6', '红桃6', '方块6', '梅花6', '黑桃6']))
+    print(rules.get_play_type(['红桃6', '方块6', '梅花6', '黑桃6', '红桃6', '黑桃6']))
 
-    # ❌ 不合法情况
-    print(rules.is_valid_play(['黑桃A', '红桃A', '黑桃2', '红桃2', '黑桃4', '红桃4']))  # ❌ False（不连续）
-    print(1)
+    print(rules.can_beat(['黑桃6', '红桃6', '方块6', '梅花6', '黑桃6'],
+                         ['黑桃10', '黑桃J', '黑桃Q', '黑桃K', '黑桃A']))
+    print(rules.is_flush_straight(['红桃A', '红桃2', '红桃3', '红桃4', '红桃5']))
+    # ✅ 5 炸 vs 同花顺（同花顺应当更大）
+    print(rules.can_beat(['黑桃6', '红桃6', '方块6', '梅花6', '黑桃6'],
+                         ['黑桃10', '黑桃J', '黑桃Q', '黑桃K', '黑桃A']))  # ✅ True（同花顺 > 5炸）
 
-    print(rules.is_valid_play(['黑桃A', '黑桃A', '黑桃2', '梅花2', '黑桃3', '红桃3']))
-    print(rules.is_valid_play(['黑桃10', '黑桃10', '黑桃9', '梅花9', '黑桃8', '红桃8']))  # ✅ True（连对）
-    print(rules.is_valid_play(['黑桃10', '黑桃10', '红桃10', '梅花9', '黑桃9', '红桃9']))  #
-    print(rules.is_valid_play(['黑桃10', '黑桃10', '黑桃9', '梅花9', '黑桃8']))  # ❌ False（不是完整连对）
-
-    # **测试各种牌型**
-    print(rules.is_valid_play(['黑桃10' ,'黑桃10' ,'黑桃9', '梅花9' ,'黑桃8', '红桃8']))  # ✅ True（天王炸）
-    print(rules.is_valid_play(['黑桃A', '红桃2', '方块3', '梅花4', '黑桃5']))  # ✅ True（顺子）
-    print(rules.is_valid_play(['黑桃10', '黑桃J', '黑桃Q', '黑桃K', '黑桃A']))  # ✅ True（顺子）
+    # ✅ 6 炸 vs 同花顺（6 炸应当更大）
+    print(rules.can_beat(['黑桃10', '黑桃J', '黑桃Q', '黑桃K', '黑桃A'],
+                         ['黑桃6', '红桃6', '方块6', '梅花6', '黑桃6', '红桃6']))  # ✅ True（6炸 > 同花顺）
+    '''
 
 
-    # 测试出牌规则
-    print(rules.can_beat(['黑桃3', '红桃3'], ['黑桃2', '红桃2']))  # 输出: False (2 是级牌，大于 3)
-    print(rules.can_beat(['黑桃A', '红桃A'], ['黑桃K', '红桃K']))
-    print(rules.can_beat(['黑桃3', '红桃3'], ['黑桃2', '红桃2']))  # False
-    print(rules.can_beat(['黑桃A', '红桃A'], ['黑桃K', '红桃K']))  # True
-    print(rules.can_beat(['黑桃5', '红桃5', '方块5', '梅花5', '梅花5'], ['小王', '大王']))  # True（王炸压制炸弹）
-    print(rules.can_beat(['小王', '小王', '大王', '大王'], ['黑桃5', '红桃5', '方块5', '梅花5', '黑桃5']))  # False（天王炸最大）
