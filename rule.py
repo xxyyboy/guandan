@@ -47,37 +47,58 @@ class Rules:
         return 3 in counts.values() and 2 in counts.values()
 
     def is_triple_pair(self, cards):
-        """连对（木板）"""
+        """连对（木板），如 556677"""
         if len(cards) != 6:
             return False
-        counts = Counter(self.get_rank(card) for card in cards)
-        pairs = [rank for rank, count in counts.items() if count == 2]
-        return len(pairs) == 3 and self._is_consecutive(pairs)
+
+        # 获取所有牌的点数（去掉花色）
+        ranks = [self.get_rank(card, as_one=False) for card in cards]
+        ranks_as_one = [self.get_rank(card, as_one=True) for card in cards]
+
+        # 统计点数出现次数
+        counts = Counter(ranks)
+        counts_as_one = Counter(ranks_as_one)
+
+        # 获取所有 **点数为 2 的对子**
+        pairs = sorted([rank for rank, count in counts.items() if count == 2])
+        pairs_as_one = sorted([rank for rank, count in counts_as_one.items() if count == 2])
+
+        # 必须有 3 组对子，并且它们的点数是连续的
+        return (len(pairs) == 3 and self._is_consecutive(pairs)) or \
+            (len(pairs_as_one) == 3 and self._is_consecutive(pairs_as_one))
 
     def is_triple_consecutive(self, cards):
-        """三同连张（钢板，如 555666）"""
+        """三同连张（钢板），如 555666"""
         if len(cards) != 6:
             return False
-        counts = Counter(self.get_rank(card) for card in cards)
-        pairs = [rank for rank, count in counts.items() if count == 2]
-        # 需要恰好是 3 个对子，且必须连续
-        return len(pairs) == 3 and self._is_consecutive(pairs)
 
+        # 获取所有牌的点数（去掉花色）
+        ranks = [self.get_rank(card, as_one=False) for card in cards]
+        ranks_as_one = [self.get_rank(card, as_one=True) for card in cards]
 
+        # 统计点数出现次数
+        counts = Counter(ranks)
+        counts_as_one = Counter(ranks_as_one)
+
+        # 获取所有 **点数为 3 的三同张**
+        triples = sorted([rank for rank, count in counts.items() if count == 3])
+        triples_as_one = sorted([rank for rank, count in counts_as_one.items() if count == 3])
+
+        # 必须有 2 组三同张，并且它们的点数是连续的
+        return (len(triples) == 2 and self._is_consecutive(triples)) or \
+            (len(triples_as_one) == 2 and self._is_consecutive(triples_as_one))
 
     def is_straight(self, cards):
-        """顺子（必须 5 张，A 可作为 1）"""
+        """顺子（必须 5 张，A 可作为 1 或 14）"""
         if len(cards) != 5:
             return False
+
+        # 获取所有牌的点数（去掉花色）
         ranks = sorted(self.get_rank(card, as_one=False) for card in cards)
+        ranks_as_one = sorted(self.get_rank(card, as_one=True) for card in cards)
 
-        if ranks[-1] == 14:  # A 作为 14
-            alt_ranks = ranks[:-1] + [1]
-            alt_ranks.sort()
-            if self._is_consecutive(alt_ranks):
-                return True
-
-        return self._is_consecutive(ranks)
+        # 检查 A=1 或 A=14 的情况
+        return self._is_consecutive(ranks) or self._is_consecutive(ranks_as_one)
 
     def is_bomb(self, cards):
         """炸弹（5 张及以上的相同牌 or 4 张相同牌）"""
@@ -95,14 +116,18 @@ class Rules:
         return sorted(cards) == ['大王', '大王', '小王', '小王']
 
     def get_rank(self, card, as_one=False):
-        """获取牌点数，支持 A 作为 1"""
+        """获取牌的点数，支持 A=1"""
         if card in ['小王', '大王']:
             return CARD_RANKS[card]
+
         rank = card[2:] if len(card) > 2 else card[2]
+
         if as_one and rank == 'A':
-            return 1
+            return 1  # A 作为 1
+
         if self.level_card and self.level_card in rank:
-            return CARD_RANKS['A'] + 1
+            return CARD_RANKS['A'] + 1  # 级牌比 A 大
+
         return CARD_RANKS.get(rank, 0)
 
     def _is_consecutive(self, ranks):
@@ -172,6 +197,26 @@ if __name__ == "__main__":
     current_round = 2
     #rules = Rules(level_card=str(current_round))
     rules = Rules(level_card=None)
+    # ✅ 正确的连对（木板）
+    print(rules.is_valid_play(['黑桃10', '红桃10', '黑桃9', '梅花9', '黑桃8', '红桃8']))  # ✅ True（连对）
+    print(rules.is_valid_play(['黑桃A', '红桃A', '黑桃2', '红桃2', '黑桃3', '红桃3']))  # ✅ True（A=1）
+
+    # ✅ 正确的三同连张（钢板）
+    print(rules.is_valid_play(['黑桃A', '红桃A', '方块A', '黑桃2', '红桃2', '方块2']))  # ✅ True（AAA222）
+    print(rules.is_valid_play(['黑桃5', '红桃5', '方块5', '黑桃6', '红桃6', '方块6']))  # ✅ True（555666）
+
+    # ✅ 正确的顺子
+    print(rules.is_valid_play(['黑桃A', '红桃2', '方块3', '梅花4', '黑桃5']))  # ✅ True（A2345）
+    print(rules.is_valid_play(['黑桃10', '红桃J', '方块Q', '梅花K', '黑桃A']))  # ✅ True（10JQKA）
+
+    # ❌ 不合法情况
+    print(rules.is_valid_play(['黑桃A', '红桃A', '黑桃2', '红桃2', '黑桃4', '红桃4']))  # ❌ False（不连续）
+    print(1)
+
+    print(rules.is_valid_play(['黑桃A', '黑桃A', '黑桃2', '梅花2', '黑桃3', '红桃3']))
+    print(rules.is_valid_play(['黑桃10', '黑桃10', '黑桃9', '梅花9', '黑桃8', '红桃8']))  # ✅ True（连对）
+    print(rules.is_valid_play(['黑桃10', '黑桃10', '红桃10', '梅花9', '黑桃9', '红桃9']))  #
+    print(rules.is_valid_play(['黑桃10', '黑桃10', '黑桃9', '梅花9', '黑桃8']))  # ❌ False（不是完整连对）
 
     # **测试各种牌型**
     print(rules.is_valid_play(['黑桃10' ,'黑桃10' ,'黑桃9', '梅花9' ,'黑桃8', '红桃8']))  # ✅ True（天王炸）
