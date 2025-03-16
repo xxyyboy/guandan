@@ -26,7 +26,8 @@ class Rules:
         if length == 4:
             return self.is_king_bomb(cards) or self.is_bomb(cards)  # 天王炸 or 炸弹
         if length == 5:
-            return self.is_straight(cards) or self.is_three_with_two(cards)  # 顺子 or 三带二
+            return self.is_straight(cards) or self.is_flush_straight(cards) or self.is_three_with_two(
+                cards)  # 顺子 / 同花顺 / 三带二
         if length == 6:
             return self.is_triple_pair(cards) or self.is_triple_consecutive(cards)  # 连对（木板） or 三同连张（钢板）
         return self.is_bomb(cards)  # 5 张及以上的炸弹
@@ -99,6 +100,21 @@ class Rules:
 
         # 检查 A=1 或 A=14 的情况
         return self._is_consecutive(ranks) or self._is_consecutive(ranks_as_one)
+
+    def is_flush_straight(self, cards):
+        """同花顺（火箭），如 ♠10JQKA"""
+        if len(cards) != 5:
+            return False
+
+        # 获取所有牌的点数（去掉花色）
+        ranks = sorted(self.get_rank(card, as_one=False) for card in cards)
+        ranks_as_one = sorted(self.get_rank(card, as_one=True) for card in cards)
+
+        # 获取所有牌的花色
+        suits = {card[:2] for card in cards}
+
+        # 需要 **同一花色** 且 **顺序正确**
+        return len(suits) == 1 and (self._is_consecutive(ranks) or self._is_consecutive(ranks_as_one))
 
     def is_bomb(self, cards):
         """炸弹（5 张及以上的相同牌 or 4 张相同牌）"""
@@ -197,6 +213,14 @@ if __name__ == "__main__":
     current_round = 2
     #rules = Rules(level_card=str(current_round))
     rules = Rules(level_card=None)
+    # ✅ 正确的同花顺
+    print(rules.is_flush_straight(['黑桃10', '黑桃J', '黑桃Q', '黑桃K', '黑桃A']))  # ✅ True（同花顺）
+    print(rules.is_flush_straight(['红桃A', '红桃2', '红桃3', '红桃4', '红桃5']))  # ✅ True（A2345 同花顺）
+
+    # ❌ 错误情况
+    print(rules.is_flush_straight(['黑桃10', '红桃J', '黑桃Q', '黑桃K', '黑桃A']))  # ❌ False（花色不同）
+    print(rules.is_valid_play(['黑桃A', '黑桃3', '黑桃4', '黑桃5', '黑桃6']))  # ❌ False（顺子不连续）
+
     # ✅ 正确的连对（木板）
     print(rules.is_valid_play(['黑桃10', '红桃10', '黑桃9', '梅花9', '黑桃8', '红桃8']))  # ✅ True（连对）
     print(rules.is_valid_play(['黑桃A', '红桃A', '黑桃2', '红桃2', '黑桃3', '红桃3']))  # ✅ True（A=1）
