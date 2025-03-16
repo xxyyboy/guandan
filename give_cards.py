@@ -71,7 +71,7 @@ def print_players_cards(players, level_card=None):
 if __name__ == "__main__":
     # 当前局数（假设为第2局）
     current_round = 2
-    use_level_card = True  # 是否启用级牌规则
+    use_level_card = False  # 是否启用级牌规则
     level_card = get_level_card(current_round) if use_level_card else None
 
     # 创建牌堆
