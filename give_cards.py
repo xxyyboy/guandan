@@ -36,6 +36,7 @@ def deal_cards(deck):
         players[i % 4].append(deck[i])
     return players
 
+
 # 获取级牌
 def get_level_card(current_round):
     # 级牌通常是当前局数的数字（如第2局的级牌是2）
