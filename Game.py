@@ -1,7 +1,7 @@
 # 2025/3/16 17:16
-import random
-from rule import Rules
 from give_cards import create_deck, shuffle_deck, deal_cards
+from rule import Rules
+
 
 class GuandanGame:
     def __init__(self, level_card=None, user_player=None):
