@@ -2,7 +2,7 @@
 from give_cards import create_deck, shuffle_deck, deal_cards
 from rule import Rules
 import random
-from itertools import combinations
+
 
 class GuandanGame:
     def __init__(self, level_card=None, user_player=None):
@@ -126,5 +126,5 @@ class GuandanGame:
 
 if __name__ == "__main__":
     user_pos = int(input("请选择你的座位（1~4）："))
-    game = GuandanGame(level_card=None, user_player=user_pos)
+    game = GuandanGame(level_card='2', user_player=user_pos)
     game.play_game()
