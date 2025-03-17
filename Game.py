@@ -1,7 +1,8 @@
 # 2025/3/16 17:16
 from give_cards import create_deck, shuffle_deck, deal_cards
 from rule import Rules
-
+import random
+from itertools import combinations
 
 class GuandanGame:
     def __init__(self, level_card=None, user_player=None):
@@ -39,29 +40,32 @@ class GuandanGame:
         return self.ai_play(player_hand)
 
     def ai_play(self, player_hand):
-        """AI 出牌逻辑（简单策略）"""
-        valid_moves = [card for card in player_hand if self.rules.is_valid_play([card])]
+        """AI 出牌逻辑（随机选择合法且能压过上家的出牌）"""
 
-        if not valid_moves:
+        # **分类手牌，构造可选牌型**
+        possible_moves = []
+        for size in [1, 2, 3, 4, 5, 6, 7, 8]:  # 限制大小，避免组合过多
+            for i in range(len(player_hand) - size + 1):
+                move = player_hand[i:i + size]
+                if self.rules.is_valid_play(move) and (not self.last_play or self.rules.can_beat(self.last_play, move)):
+                    possible_moves.append(move)
+
+        if not possible_moves:
             print(f"玩家 {self.current_player + 1} Pass")
             self.pass_count += 1
         else:
-            for card in valid_moves:
-                if self.last_play is None or self.rules.can_beat(self.last_play, [card]):
-                    self.last_play = [card]
-                    self.last_player = self.current_player
-                    player_hand.remove(card)
-                    print(f"玩家 {self.current_player + 1} 出牌: {card}")
+            chosen_move = random.choice(possible_moves)  # **随机选择一个合法的牌型**
+            self.last_play = chosen_move
+            self.last_player = self.current_player
+            for card in chosen_move:
+                player_hand.remove(card)
+            print(f"玩家 {self.current_player + 1} 出牌: {' '.join(chosen_move)}")
 
-                    if not player_hand:
-                        print(f"\n🎉 玩家 {self.current_player + 1} 出完所有牌，游戏结束！\n")
-                        return True
+            if not player_hand:
+                print(f"\n🎉 玩家 {self.current_player + 1} 出完所有牌，游戏结束！\n")
+                return True
 
-                    self.pass_count = 0
-                    break
-            else:
-                print(f"玩家 {self.current_player + 1} Pass")
-                self.pass_count += 1
+            self.pass_count = 0
 
         self.current_player = (self.current_player + 1) % 4
         return False
@@ -122,5 +126,5 @@ class GuandanGame:
 
 if __name__ == "__main__":
     user_pos = int(input("请选择你的座位（1~4）："))
-    game = GuandanGame(level_card='5', user_player=user_pos)
+    game = GuandanGame(level_card=None, user_player=user_pos)
     game.play_game()
