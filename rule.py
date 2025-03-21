@@ -6,7 +6,7 @@ CARD_RANKS = {
     '9': 9, '10': 10, 'J': 11, 'Q': 12, 'K': 13, 'A': 14,
     '小王': 16, '大王': 17
 }
-
+RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
 class Rules:
     def __init__(self, level_card=None):
         self.level_card = level_card  # 级牌
@@ -138,13 +138,14 @@ class Rules:
         if card in ['小王', '大王']:
             return CARD_RANKS[card]
 
-        rank = card[2:] if len(card) > 2 else card[2]
+        rank = card[2:] if len(card) > 2 else card[2]  # 解析点数
+
+        # **只检查当前局的级牌**
+        if rank == RANKS[self.level_card - 2]:
+            return CARD_RANKS['A'] + 1  # 级牌比 A 还大
 
         if as_one and rank == 'A':
             return 1  # A 作为 1
-
-        if self.level_card and self.level_card in rank:
-            return CARD_RANKS['A'] + 1  # 级牌比 A 大
 
         return CARD_RANKS.get(rank, 0)
 
