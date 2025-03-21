@@ -172,8 +172,14 @@ class GuandanGame:
             print("\n🎯 该队已到 A 级，并取得非一四名胜利，游戏结束！")
             return
 
-        # **传入新局的级牌，只使用获胜队伍的级牌**
-        GuandanGame(team_levels=self.team_levels, active_level=new_level).play_game()
+        # **提示玩家是否继续游戏**
+        cont = input("是否继续下一局？(y/n): ").strip().lower()
+        if cont == 'y' or cont == "":
+            # **传入新局的级牌，只使用获胜队伍的级牌**
+            new_game = GuandanGame(team_levels=self.team_levels, active_level=new_level)
+            new_game.play_game()
+        else:
+            print("游戏结束！")
 
     def play_game(self):
         """执行一整局游戏"""
@@ -184,7 +190,12 @@ class GuandanGame:
         while True:
             if self.play_turn():
                 break
-
+    def show_user_hand(self):
+        """显示用户手牌（按排序后的顺序）"""
+        sorted_hand = self.sort_cards(self.players[self.user_player])
+        print("\n🃏 你的手牌：", " ".join(sorted_hand))
+        if self.last_play:
+            print(f"🃏 场上最新出牌：{' '.join(self.last_play)}\n")
 
 if __name__ == "__main__":
     user_pos = int(input("请选择你的座位（1~4）："))
