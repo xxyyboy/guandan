@@ -71,15 +71,55 @@ class GuandanEnv(gym.Env):
         return obs
 
     def step(self, action):
-        # 解析 action，执行出牌逻辑
-        reward = 0
-        done = False
+        """
+        执行一个动作，并返回新的状态、奖励、是否结束、以及额外信息。
+        """
+        current_player = self.game.current_player
+        player = self.game.players[current_player]
 
-        if self.game.play_turn():  # 游戏结束
-            done = True
-            reward = 1 if self.game.current_player in [0, 2] else -1  # 1、3 号赢得正分
+        # 确保行动合法
+        if not self.rules.is_valid_play(player.hand, action):
+            return self._get_obs(), -1, False, {"error": "Invalid action"}  # 非法行动，惩罚 -1
 
-        return self._get_obs(), reward, done, {}
+        # 1. 执行出牌
+        for card in action:
+            player.hand.remove(card)
+            player.played_cards.append(card)  # 记录已出的牌
+        self.game.recent_actions[current_player] = action  # 记录最近的动作
+
+        # 2. 处理逢人配（红桃级牌）—— 在合法性检测时已处理，这里不需要特别修改
+
+        # 3. 计算奖励
+        reward = 0.1  # 每次出牌都给予基础奖励
+
+        # **如果该玩家出完所有牌**
+        if len(player.hand) == 0:
+            player.finished = True
+            reward += 1  # 额外奖励
+            print(f"玩家 {current_player} 已打完")
+
+        # 4. 判断是否游戏结束（新的规则）
+        active_players = [p for p in self.game.players if not p.finished]
+
+        if len(active_players) == 1:  # 只剩 1 人未出完牌，游戏结束
+            self.game_done = True
+            winning_team = 0 if current_player in [0, 2] else 1  # 0-2 队 vs 1-3 队
+            print(f"游戏结束！胜利队伍是 {'0-2 队' if winning_team == 0 else '1-3 队'}")
+
+            # 胜利队伍奖励
+            for i, p in enumerate(self.game.players):
+                if i in [0, 2] and winning_team == 0:
+                    reward = 1  # 队伍 0-2 胜利
+                elif i in [1, 3] and winning_team == 1:
+                    reward = 1  # 队伍 1-3 胜利
+                else:
+                    reward = -1  # 失败者惩罚
+
+        # 5. 切换到下一个玩家（如果游戏没结束）
+        if not self.game_done:
+            self._next_player()
+
+        return self._get_obs(), reward, self.game_done, {}
 
     def render(self, mode="human"):
         self.game.show_user_hand()
