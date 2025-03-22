@@ -151,10 +151,6 @@ class Rules:
         ranks = [self.get_rank(card) for card in cards]
         return len(set(ranks)) == 1
 
-    def is_rocket(self, cards):
-        """王炸"""
-        return set(cards) == {'小王', '大王'}
-
     def is_king_bomb(self, cards):
         """四大天王（天王炸）"""
         return sorted(cards) == ['大王', '大王', '小王', '小王']
