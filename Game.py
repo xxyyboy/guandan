@@ -6,56 +6,83 @@ import random
 
 RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
 
+class Player:
+    def __init__(self, hand):
+        self.hand = hand  # 手牌
+        self.played_cards = []  # 记录已出的牌
 
 class GuandanGame:
-    def __init__(self, team_levels=None, user_player=None, active_level=None):
+    def __init__(self, team_levels=None, user_player=None, active_level=2):
         # **两队各自的级牌**
         self.team_levels = team_levels if team_levels else {1: 2, 2: 2}
 
         # **本局级牌取决于上一局的胜者**
-        self.active_level = active_level if active_level else 2
-
+        self.active_level = active_level
+        # 历史记录，记录最近 20 轮的出牌情况（每轮包含 4 个玩家的出牌）
+        self.history = []
         # **只传当前局的有效级牌**
         self.rules = Rules(self.active_level)
-
-        self.players = deal_cards(shuffle_deck(create_deck()))  # 发牌
+        # self.players = deal_cards(shuffle_deck(create_deck()))
+        self.players = [Player(hand) for hand in deal_cards(shuffle_deck(create_deck()))]# 发牌
         self.current_player = 0  # 当前出牌玩家
         self.last_play = None  # 记录上一手牌
         self.last_player = -1  # 记录上一手是谁出的
         self.pass_count = 0  # 记录连续 Pass 的次数
         self.user_player = user_player - 1 if user_player else None  # 转换为索引（0~3）
         self.ranking = []  # 存储出完牌的顺序
+        self.recent_actions = {i: [] for i in range(4)}
 
         # **手牌排序**
+        for player in self.players:
+            player.hand = self.sort_cards(player.hand)
+        '''
         for i in range(4):
             self.players[i] = self.sort_cards(self.players[i])
+        '''
 
     def sort_cards(self, cards):
         """按牌的大小排序（从大到小）"""
         return sorted(cards, key=lambda card: self.rules.get_rank(card), reverse=True)
 
     def play_turn(self):
-        """当前玩家尝试出牌"""
+        """执行当前玩家的回合"""
         if self.current_player in self.ranking:
-            # **跳过已经打完牌的玩家**
             self.current_player = (self.current_player + 1) % 4
             return False
 
-        player_hand = self.players[self.current_player]
+        player = self.players[self.current_player]  # ✅ 获取当前玩家对象
+        player_hand = player.hand  # ✅ 取出手牌
 
-        if self.user_player == self.current_player:
-            self.show_user_hand()
+        # **如果当前玩家已经在 `recent_actions` 里出牌，则处理**
+        if self.current_player in self.recent_actions and self.recent_actions[self.current_player]:
+            action = self.recent_actions[self.current_player]
+        else:
+            # **AI 选择出牌**
+            action = self.ai_play(player)
 
-        # **确保所有剩余玩家都能行动一次，而不是直接重置轮次**
-        if self.pass_count == 3 and len(self.ranking) < 3:
-            print(f"\n🆕 3 人 Pass，本轮重置！玩家 {self.current_player + 1} 可以自由出牌。\n")
-            self.last_play = None
-            self.pass_count = 0
+        # **处理 Pass 逻辑**
+        if not action:
+            print(f"玩家 {self.current_player + 1} 选择 PASS")
+            self.pass_count += 1
+        else:
+            # **执行出牌**
+            for card in action:
+                player_hand.remove(card)
+            self.last_play = action  # 记录上一手牌
+            self.last_player = self.current_player  # 记录是谁出的
+            self.pass_count = 0  # ✅ 只要有人出牌，Pass 计数归零
 
-        if self.user_player == self.current_player:
-            return self.user_play(player_hand)
+            print(f"玩家 {self.current_player + 1} 出牌: {' '.join(action)}")
 
-        return self.ai_play(player_hand)
+            # **如果手牌为空，玩家出完所有牌**
+            if not player_hand:
+                print(f"\n🎉 玩家 {self.current_player + 1} 出完所有牌！\n")
+                self.ranking.append(self.current_player)
+
+        # **切换到下一个玩家**
+        self.current_player = (self.current_player + 1) % 4
+
+        return self.check_game_over()
 
     def ai_play(self, player_hand):
         """AI 出牌逻辑（随机选择合法且能压过上家的出牌）"""
@@ -64,7 +91,7 @@ class GuandanGame:
         if self.current_player in self.ranking:
             self.current_player = (self.current_player + 1) % 4
             return False
-
+        player_hand = player_hand.hand
         # **构造可选牌型**
         possible_moves = []
         for size in [1, 2, 3, 4, 5, 6, 7, 8]:
@@ -76,6 +103,7 @@ class GuandanGame:
         if not possible_moves:
             print(f"玩家 {self.current_player + 1} Pass")
             self.pass_count += 1
+            self.recent_actions[self.current_player] = []
         else:
             chosen_move = random.choice(possible_moves)  # **随机选择一个合法的牌型**
             self.last_play = chosen_move
@@ -83,7 +111,7 @@ class GuandanGame:
             for card in chosen_move:
                 player_hand.remove(card)
             print(f"玩家 {self.current_player + 1} 出牌: {' '.join(chosen_move)}")
-
+            self.recent_actions[self.current_player] = list(chosen_move)
             if not player_hand:
                 print(f"\n🎉 玩家 {self.current_player + 1} 出完所有牌！\n")
                 self.ranking.append(self.current_player)
@@ -93,43 +121,64 @@ class GuandanGame:
         self.current_player = (self.current_player + 1) % 4
         return self.check_game_over()
 
-    def user_play(self, player_hand):
-        """让用户手动选择出牌"""
+    def user_play(self, player):
+        """用户出牌逻辑"""
         while True:
-            self.show_user_hand()
-            choice = input("\n请选择要出的牌（用空格分隔），或直接回车跳过： ").strip()
+            self.show_user_hand()  # 显示手牌
+            choice = input("\n请选择要出的牌（用空格分隔），或直接回车跳过（PASS）： ").strip()
 
-            if choice == "":  # **回车等同于 pass**
-                print(f"玩家 {self.current_player + 1} Pass")
+            # **用户选择 PASS**
+            if choice == "":
+                print(f"玩家 {self.current_player + 1} 选择 PASS")
                 self.pass_count += 1
+                self.recent_actions[self.current_player] = []  # ✅ 记录 PASS
                 break
 
             if choice.lower() == "pass":
-                print(f"玩家 {self.current_player + 1} Pass")
+                print(f"玩家 {self.current_player + 1} 选择 PASS")
                 self.pass_count += 1
+                self.recent_actions[self.current_player] = []  # ✅ 记录 PASS
                 break
 
+            # **解析用户输入的牌**
             selected_cards = choice.split()
-            if all(card in player_hand for card in selected_cards) and self.rules.is_valid_play(selected_cards):
-                if self.last_play is None or self.rules.can_beat(self.last_play, selected_cards):
-                    for card in selected_cards:
-                        player_hand.remove(card)
-                    self.last_play = selected_cards
-                    self.last_player = self.current_player
-                    print(f"玩家 {self.current_player + 1} 出牌: {' '.join(selected_cards)}")
 
-                    if not player_hand:
-                        print(f"\n🎉 你出完所有牌！\n")
-                        self.ranking.append(self.current_player)
+            # **检查牌是否在手牌中**
+            if not all(card in player.hand for card in selected_cards):
+                print("❌ 你的输入无效，请确保牌在你的手牌中！")
+                continue  # 重新输入
 
-                    self.pass_count = 0
-                    break
-                else:
-                    print("❌ 你出的牌不能压过上一手牌，请重新选择！")
-            else:
-                print("❌ 你的输入无效，请确保牌在你的手牌中并符合规则！")
+            # **检查牌是否合法**
+            if not self.rules.is_valid_play(selected_cards):
+                print("❌ 你的出牌不符合规则，请重新选择！")
+                continue  # 重新输入
 
+            # **检查是否能压过上一手牌**
+            if self.last_play is not None and not self.rules.can_beat(self.last_play, selected_cards):
+                print("❌ 你的牌无法压过上一手牌，请重新选择！")
+                continue  # 重新输入
+
+            # **成功出牌**
+            for card in selected_cards:
+                player.hand.remove(card)  # 从手牌中移除
+            self.last_play = selected_cards  # 记录这次出牌
+            self.last_player = self.current_player  # 记录是谁出的
+            self.recent_actions[self.current_player] = list(selected_cards)  # ✅ 记录出牌
+
+            print(f"玩家 {self.current_player + 1} 出牌: {' '.join(selected_cards)}")
+
+            # **如果手牌为空，玩家出完所有牌**
+            if not player.hand:
+                print(f"\n🎉 玩家 {self.current_player + 1} 出完所有牌！\n")
+                self.ranking.append(self.current_player)
+
+            # **出牌成功，Pass 计数归零**
+            self.pass_count = 0
+            break
+
+        # **切换到下一个玩家**
         self.current_player = (self.current_player + 1) % 4
+
         return self.check_game_over()
 
     def check_game_over(self):
@@ -173,6 +222,9 @@ class GuandanGame:
             print("\n🎯 该队已到 A 级，并取得非一四名胜利，游戏结束！")
             return
 
+        new_game = GuandanGame(team_levels=self.team_levels, active_level=new_level)
+        new_game.play_game()
+        '''
         # **提示玩家是否继续游戏**
         cont = input("是否继续下一局？(y/n): ").strip().lower()
         if cont == 'y' or cont == "":
@@ -181,6 +233,7 @@ class GuandanGame:
             new_game.play_game()
         else:
             print("游戏结束！")
+        '''
 
     def play_game(self):
         """执行一整局游戏"""

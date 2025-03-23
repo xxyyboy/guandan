@@ -10,6 +10,12 @@ RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
 class Rules:
     def __init__(self, level_card=None):
         self.level_card = level_card  # 级牌
+        self.CARD_RANKS = {
+            '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8,
+            '9': 9, '10': 10, 'J': 11, 'Q': 12, 'K': 13, 'A': 14,
+            '小王': 16, '大王': 17
+        }
+        self.RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
 
     def is_valid_play(self, cards):
         """判断出牌是否合法"""
