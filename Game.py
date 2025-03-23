@@ -50,39 +50,32 @@ class GuandanGame:
             self.current_player = (self.current_player + 1) % 4
             return False
 
-        player = self.players[self.current_player]  # ✅ 获取当前玩家对象
-        player_hand = player.hand  # ✅ 取出手牌
+        player = self.players[self.current_player]  # 获取当前玩家对象
+        player_hand = player.hand  # 取出手牌
 
-        # **如果当前玩家已经在 `recent_actions` 里出牌，则处理**
-        if self.current_player in self.recent_actions and self.recent_actions[self.current_player]:
-            action = self.recent_actions[self.current_player]
+        # **计算当前仍有手牌的玩家数**
+        active_players = sum(1 for p in self.players if len(p.hand) > 0)
+
+        # **如果 Pass 的人 == "当前有手牌的玩家数 - 1"，就重置轮次**
+        if self.pass_count >= (active_players - 1):
+            print(f"\n🆕 {self.pass_count} 人 Pass，轮次重置！玩家 {self.current_player + 1} 可以自由出牌。\n")
+            self.last_play = None  # ✅ 允许新的自由出牌
+            self.pass_count = 0  # ✅ Pass 计数归零
+
+        # **AI 或用户出牌**
+        if self.user_player == self.current_player:
+            result = self.user_play(player)
         else:
-            # **AI 选择出牌**
-            action = self.ai_play(player)
+            result = self.ai_play(player)
 
-        # **处理 Pass 逻辑**
-        if not action:
-            print(f"玩家 {self.current_player + 1} 选择 PASS")
-            self.pass_count += 1
-        else:
-            # **执行出牌**
-            for card in action:
-                player_hand.remove(card)
-            self.last_play = action  # 记录上一手牌
-            self.last_player = self.current_player  # 记录是谁出的
-            self.pass_count = 0  # ✅ 只要有人出牌，Pass 计数归零
+        # **记录最近 5 轮历史**
+        if self.current_player == 0:
+            round_history = [self.recent_actions[i] for i in range(4)]
+            self.history.append(round_history)
+            if len(self.history) > 20:
+                self.history.pop(0)
 
-            print(f"玩家 {self.current_player + 1} 出牌: {' '.join(action)}")
-
-            # **如果手牌为空，玩家出完所有牌**
-            if not player_hand:
-                print(f"\n🎉 玩家 {self.current_player + 1} 出完所有牌！\n")
-                self.ranking.append(self.current_player)
-
-        # **切换到下一个玩家**
-        self.current_player = (self.current_player + 1) % 4
-
-        return self.check_game_over()
+        return result
 
     def ai_play(self, player_hand):
         """AI 出牌逻辑（随机选择合法且能压过上家的出牌）"""
