@@ -225,7 +225,7 @@ class GuandanGame:
                     # 记录首次达到A级的时间
                     if self.rules.reached_a[team] is None:
                         self.rules.reached_a[team] = round_count
-                        print(f"\n⚠️ {team} 队首次达到A级！需要下一轮获胜且同伴获得二游或三游才能获胜")
+                        print(f"\n⚠️ {team} 队达到A级！需要下一轮获胜且同伴获得二游或三游才能获胜")
                     
                     # 获取该队玩家
                     team_index = 0 if team == 'A' else 1  # A队=0, B队=1
@@ -237,20 +237,22 @@ class GuandanGame:
                         # 确保队友确实在二游或三游位置
                         if teammate in self.finished_players[1:3]:
                             # 检查是否是达到A级后的下一轮
-                            if self.rules.reached_a[team] is not None and round_count > self.rules.reached_a[team]:
+                            if self.rules.reached_a[team] is not None and round_count == self.rules.reached_a[team]+1:
                                 # 验证本轮确实是该队获胜
                                 if self.finished_players[0] == team_players[0] or self.finished_players[0] == team_players[1]:
                                     print(f"\n🎉 {team} 队达到A级且同伴获得二游或三游，{team} 队获胜！")
                                     return True
                                 else:
                                     print(f"\n⚠️ {team} 队达到A级但本轮未获胜，继续游戏")
+                                    self.rules.reached_a[team] = None
                     
                     # 更新失败计数
-                    if self.finished_players[0] not in team_players:
-                        self.rules.fail_count_after_a[team] += 1
-                        if self.rules.fail_count_after_a[team] >= 3:
-                            print(f"\n⚠️ {team} 队达到A级后连续3轮未获胜，级牌重置为2！")
-                            self.rules.reset_level(team)
+                    if self.rules.reached_a[team] is not None:
+                        if self.finished_players[0] not in team_players:
+                            self.rules.fail_count_after_a[team] += 1
+                            if self.rules.fail_count_after_a[team] >= 3:
+                                print(f"\n⚠️ {team} 队达到A级后3轮未打过A，级牌重置为2！")
+                                self.rules.reset_level(team)
             
             round_count += 1
 
