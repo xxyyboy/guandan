@@ -137,6 +137,16 @@ class GuandanEnv(gym.Env):
 
         return obs, reward, done, {}
 
+    def compute_reward(self):
+        """计算当前的奖励"""
+        if self.game_over():
+            # 如果游戏结束，给胜利队伍正奖励，失败队伍负奖励
+            return 100 if self.current_player in self.winning_team else -100
+
+        # **鼓励 AI 先出完手牌**
+        hand_size = len(self.players[self.current_player].hand)
+        return -hand_size  # 手牌越少，奖励越高
+
     def reset(self, *, seed=None, options=None):
         """
         重置环境，返回状态 `obs` 和 空字典 `info`
