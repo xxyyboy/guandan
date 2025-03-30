@@ -6,6 +6,45 @@ import random
 RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
 
 
+def play_turn(self):
+    """执行当前玩家的回合"""
+    if self.current_player in self.ranking:
+        self.current_player = (self.current_player + 1) % 4
+        return False
+
+    player = self.players[self.current_player]  # ✅ 获取当前玩家对象
+    player_hand = player.hand  # ✅ 取出手牌
+
+    # **如果当前玩家已经在 `recent_actions` 里出牌，则处理**
+    if self.current_player in self.recent_actions and self.recent_actions[self.current_player]:
+        action = self.recent_actions[self.current_player]
+    else:
+        # **AI 选择出牌**
+        action = self.ai_play(player)
+
+    # **处理 Pass 逻辑**
+    if not action:
+        print(f"玩家 {self.current_player + 1} 选择 PASS")
+        self.pass_count += 1
+    else:
+        # **执行出牌**
+        for card in action:
+            player_hand.remove(card)
+        self.last_play = action  # 记录上一手牌
+        self.last_player = self.current_player  # 记录是谁出的
+        self.pass_count = 0  # ✅ 只要有人出牌，Pass 计数归零
+
+        print(f"玩家 {self.current_player + 1} 出牌: {' '.join(action)}")
+
+        # **如果手牌为空，玩家出完所有牌**
+        if not player_hand:
+            print(f"\n🎉 玩家 {self.current_player + 1} 出完所有牌！\n")
+            self.ranking.append(self.current_player)
+
+    # **切换到下一个玩家**
+    self.current_player = (self.current_player + 1) % 4
+
+    return self.check_game_over()
 class GuandanGame:
     def __init__(self, team_levels=None, user_player=None, active_level=None):
         # **两队各自的级牌**
