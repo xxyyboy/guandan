@@ -26,7 +26,7 @@ class Rules:
         if length == 1:
             return True  # 单张
         if length == 2:
-            return self.is_pair(cards)  # 只保留对子
+            return self.is_pair(cards)  # 对子
         if length == 3:
             return self.is_triple(cards)  # 三同张
         if length == 4:
@@ -131,9 +131,6 @@ class Rules:
         ranks = [self.get_rank(card) for card in cards]
         return len(set(ranks)) == 1
 
-    def is_rocket(self, cards):
-        """王炸"""
-        return set(cards) == {'小王', '大王'}
 
     def is_king_bomb(self, cards):
         """四大天王（天王炸）"""
