@@ -4,6 +4,7 @@
 from give_cards import create_deck, shuffle_deck, deal_cards
 from rule import Rules
 import random
+from collections import Counter
 RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
 
 class Player:
@@ -82,6 +83,60 @@ class GuandanGame:
             '''
         return result
 
+    def get_possible_moves(self, player_hand):
+        """获取所有可能的合法出牌，包括顺子（5 张）、连对（aabbcc）、钢板（aaabbb）"""
+
+        possible_moves = []
+        hand_points = [self.rules.get_rank(card) for card in player_hand]  # 仅点数（去掉花色）
+        hand_counter = Counter(hand_points)  # 统计点数出现次数
+        unique_points = sorted(set(hand_points))  # 仅保留唯一点数，排序
+
+        # 1. **原逻辑（单张、对子、三条、炸弹等）**
+        for size in [1, 2, 3, 4, 5, 6, 7, 8]:
+            for i in range(len(player_hand) - size + 1):
+                move = player_hand[i:i + size]
+                if self.rules.is_valid_play(move) and (not self.last_play or self.rules.can_beat(self.last_play, move)):
+                    possible_moves.append(move)
+
+        # 2. **检查顺子（固定 5 张）**
+        for i in range(len(unique_points) - 4):  # 只找长度=5 的顺子
+            seq = unique_points[i:i + 5]
+            if self.rules._is_consecutive(seq) and 15 not in seq:  # 不能有大小王
+                move = self._map_back_to_suit(seq, player_hand)  # 还原带花色的牌
+                if self.rules.is_valid_play(move) and (not self.last_play or self.rules.can_beat(self.last_play, move)):
+                    possible_moves.append(move)
+
+        # 3. **检查连对（aabbcc）**
+        for i in range(len(unique_points) - 2):  # 只找 3 组对子
+            seq = unique_points[i:i + 3]
+            if all(hand_counter[p] >= 2 for p in seq):  # 每张至少两张
+                move = self._map_back_to_suit(seq, player_hand, count=2)  # 每点数取 2 张
+                if self.rules.is_valid_play(move) and (not self.last_play or self.rules.can_beat(self.last_play, move)):
+                    possible_moves.append(move)
+
+        # 4. **检查钢板（aaabbb）**
+        for i in range(len(unique_points) - 1):  # 只找 2 组三张
+            seq = unique_points[i:i + 2]
+            if all(hand_counter[p] >= 3 for p in seq):  # 每张至少 3 张
+                move = self._map_back_to_suit(seq, player_hand, count=3)  # 每点数取 3 张
+                if self.rules.is_valid_play(move) and (not self.last_play or self.rules.can_beat(self.last_play, move)):
+                    possible_moves.append(move)
+
+        return possible_moves
+
+    def _map_back_to_suit(self, seq, sorted_hand, count=1):
+        """从手牌映射回带花色的牌"""
+        move = []
+        hand_copy = sorted_hand[:]  # 复制手牌
+        for p in seq:
+            for _ in range(count):  # 取 count 张
+                for card in hand_copy:
+                    if self.rules.get_rank(card) == p:
+                        move.append(card)
+                        hand_copy.remove(card)
+                        break
+        return move
+
     def ai_play(self, player):
         """AI 出牌逻辑（随机选择合法且能压过上家的出牌）"""
 
@@ -94,14 +149,16 @@ class GuandanGame:
 
         player_hand = player.hand
 
+        possible_moves = self.get_possible_moves(player_hand)
         # **构造可选牌型**
+        '''
         possible_moves = []
         for size in [1, 2, 3, 4, 5, 6, 7, 8]:
             for i in range(len(player_hand) - size + 1):
                 move = player_hand[i:i + size]
                 if self.rules.is_valid_play(move) and (not self.last_play or self.rules.can_beat(self.last_play, move)):
                     possible_moves.append(move)
-
+        '''
         if not possible_moves:
             self.log(f"玩家 {self.current_player + 1} Pass")
             self.pass_count += 1
