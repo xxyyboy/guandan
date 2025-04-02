@@ -1,20 +1,14 @@
 from collections import Counter
 
-# 定义牌的点数
-CARD_RANKS = {
-    '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8,
-    '9': 9, '10': 10, 'J': 11, 'Q': 12, 'K': 13, 'A': 14,
-    '小王': 16, '大王': 17
-}
-
-
 class Rules:
-    def __init__(self):
-        # 两队级牌，初始都为2
-        self.team_level_cards = {
-            'team1': '2',
-            'team2': '2'
+    def __init__(self, level_card=None):
+        self.level_card = level_card  # 级牌
+        self.CARD_RANKS = {
+            '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8,
+            '9': 9, '10': 10, 'J': 11, 'Q': 12, 'K': 13, 'A': 14,
+            '小王': 16, '大王': 17
         }
+        self.RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
 
     def is_valid_play(self, cards):
         """判断出牌是否合法"""
@@ -25,7 +19,7 @@ class Rules:
         if length == 1:
             return True  # 单张
         if length == 2:
-            return self.is_pair(cards)  # 只保留对子
+            return self.is_pair(cards)  # 对子
         if length == 3:
             return self.is_triple(cards)  # 三同张
         if length == 4:
@@ -130,9 +124,6 @@ class Rules:
         ranks = [self.get_rank(card) for card in cards]
         return len(set(ranks)) == 1
 
-    def is_rocket(self, cards):
-        """王炸"""
-        return set(cards) == {'小王', '大王'}
 
     def is_king_bomb(self, cards):
         """四大天王（天王炸）"""
@@ -141,19 +132,18 @@ class Rules:
     def get_rank(self, card, as_one=False):
         """获取牌的点数，支持 A=1"""
         if card in ['小王', '大王']:
-            return CARD_RANKS[card]
+            return self.CARD_RANKS[card]
 
-        rank = card[2:] if len(card) > 2 else card[2]
+        rank = card[2:] if len(card) > 2 else card[2]  # 解析点数
+
+        # **只检查当前局的级牌**
+        if rank == self.RANKS[self.level_card - 2]:
+            return self.CARD_RANKS['A'] + 1  # 级牌比 A 还大
 
         if as_one and rank == 'A':
             return 1  # A 作为 1
 
-        # 检查是否是任一队伍的级牌
-        for team, level in self.team_level_cards.items():
-            if level in rank:
-                return CARD_RANKS['A'] + 1  # 级牌比 A 大
-
-        return CARD_RANKS.get(rank, 0)
+        return self.CARD_RANKS.get(rank, 0)
 
     def _is_consecutive(self, ranks):
         """判断是否为连续数字序列"""
@@ -168,6 +158,7 @@ class Rules:
 
         prev_type = self.get_play_type(previous_play)
         curr_type = self.get_play_type(current_play)
+
 
         # **修正炸弹牌力顺序**
         bomb_order = ['天王炸', '8炸', '7炸', '6炸', '同花顺', '5炸', '4炸']
@@ -222,54 +213,3 @@ class Rules:
         """获取牌点数"""
         ranks = [self.get_rank(card) for card in cards]
         return max(ranks)
-
-    def update_level_card(self, finished_players):
-        """根据游戏结果更新级牌"""
-        head_player = finished_players[0]  # 头游
-        teammate = (head_player + 2) % 4  # 对家
-        winning_team = 'team1' if head_player in [0, 2] else 'team2'
-
-        # 获取同伴的排名（12名、13名、14名）
-        teammate_rank = finished_players.index(teammate)
-
-        # 确定升级数
-        upgrade = {1: 3, 2: 2, 3: 1}.get(teammate_rank, 0)
-
-        # 更新级牌
-        current_level = int(self.team_level_cards[winning_team])
-        new_level = min(current_level + upgrade, 14)  # 不能超过 A（14）
-        self.team_level_cards[winning_team] = str(new_level)
-
-        # 判断是否满足游戏结束条件
-        if new_level == 14:
-            self.game_end_candidate = winning_team  # 标记达到 A 的队伍
-        else:
-            self.game_end_candidate = None  # 还未满足游戏结束条件
-
-    def check_game_end(self, finished_players):
-        """检查是否符合游戏结束条件"""
-        if not hasattr(self, 'game_end_candidate'):
-            return False  # 还没有队伍到 A
-
-        head_player = finished_players[0]  # 头游
-        winning_team = 'team1' if head_player in [0, 2] else 'team2'
-
-        if self.game_end_candidate == winning_team:
-            teammate = (head_player + 2) % 4
-            teammate_rank = finished_players.index(teammate)
-
-            if teammate_rank != 3:  # 不是 14 名胜利
-                print(f"\n🎉🎉 {winning_team} 的级牌已到 A，并再次获胜，游戏结束！🎉🎉\n")
-                return True  # 游戏结束
-            else:
-                print(f"\n⚠️ {winning_team} 的级牌已到 A，但以 14 名胜利，继续下一局。\n")
-
-        return False  # 游戏继续
-
-
-if __name__ == "__main__":
-    current_round = 2
-    rules = Rules(level_card=str(current_round))
-
-    print(rules.is_valid_play(['黑桃6', '红桃2', '方块7', '梅花9', '黑桃7', '黑桃9']))
-

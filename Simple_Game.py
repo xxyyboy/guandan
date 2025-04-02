@@ -1,10 +1,17 @@
 # 2025/3/16 17:16
 # 2025/3/21 新增级牌升级规则
 # 2025/4/1 完善规则
-from give_cards import create_deck, shuffle_deck, deal_cards
-from rule import Rules
 import random
 from collections import Counter
+try:
+    from c_rule import Rules  # 导入 Cython 版本
+except ImportError:
+    from rule import Rules  # 退回 Python 版本
+
+try:
+    from c_give_cards import create_deck, shuffle_deck, deal_cards
+except ImportError:
+    from give_cards import create_deck, shuffle_deck, deal_cards
 RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
 
 class Player:
@@ -95,7 +102,7 @@ class GuandanGame:
         for size in [1, 2, 3, 4, 5, 6, 7, 8]:
             for i in range(len(player_hand) - size + 1):
                 move = player_hand[i:i + size]
-                if self.rules.is_valid_play(move) and (not self.last_play or self.rules.can_beat(self.last_play, move)):
+                if self.rules.can_beat(self.last_play, move):
                     possible_moves.append(move)
 
         # 2. **检查顺子（固定 5 张）**
@@ -103,7 +110,7 @@ class GuandanGame:
             seq = unique_points[i:i + 5]
             if self.rules._is_consecutive(seq) and 15 not in seq:  # 不能有大小王
                 move = self._map_back_to_suit(seq, player_hand)  # 还原带花色的牌
-                if self.rules.is_valid_play(move) and (not self.last_play or self.rules.can_beat(self.last_play, move)):
+                if self.rules.can_beat(self.last_play, move):
                     possible_moves.append(move)
 
         # 3. **检查连对（aabbcc）**
@@ -111,7 +118,7 @@ class GuandanGame:
             seq = unique_points[i:i + 3]
             if all(hand_counter[p] >= 2 for p in seq):  # 每张至少两张
                 move = self._map_back_to_suit(seq, player_hand, count=2)  # 每点数取 2 张
-                if self.rules.is_valid_play(move) and (not self.last_play or self.rules.can_beat(self.last_play, move)):
+                if self.rules.can_beat(self.last_play, move):
                     possible_moves.append(move)
 
         # 4. **检查钢板（aaabbb）**
@@ -119,7 +126,7 @@ class GuandanGame:
             seq = unique_points[i:i + 2]
             if all(hand_counter[p] >= 3 for p in seq):  # 每张至少 3 张
                 move = self._map_back_to_suit(seq, player_hand, count=3)  # 每点数取 3 张
-                if self.rules.is_valid_play(move) and (not self.last_play or self.rules.can_beat(self.last_play, move)):
+                if self.rules.can_beat(self.last_play, move):
                     possible_moves.append(move)
 
         return possible_moves
