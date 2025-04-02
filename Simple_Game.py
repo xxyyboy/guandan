@@ -1,10 +1,9 @@
 # 2025/3/16 17:16
 # 2025/3/21 新增级牌升级规则
-# 2025/3/21 完善规则
+# 2025/4/1 完善规则
 from give_cards import create_deck, shuffle_deck, deal_cards
 from rule import Rules
 import random
-
 RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
 
 class Player:
@@ -34,6 +33,8 @@ class GuandanGame:
         self.ranking = []  # 存储出完牌的顺序
         self.recent_actions = {i: [] for i in range(4)}
         self.verbose = verbose  # 控制是否输出文本
+        self.team_1 = {0, 2}
+        self.team_2 = {1, 3}
 
         # **手牌排序**
         for player in self.players:
@@ -74,8 +75,7 @@ class GuandanGame:
         if self.current_player == 0:
             round_history = [self.recent_actions[i] for i in range(4)]
             self.history.append(round_history)
-            for i in range(4):
-                self.recent_actions[i]=[]
+            self.recent_actions=[['None'],['None'],['None'],['None']]
             '''
             if len(self.history) > 20:
                 self.history.pop(0)
@@ -127,14 +127,11 @@ class GuandanGame:
 
     def check_game_over(self):
         """检查游戏是否结束"""
-        team_1 = {0, 2}
-        team_2 = {1, 3}
-
         # **如果有 2 个人出完牌，并且他们是同一队伍，游戏立即结束**
         if len(self.ranking) >= 2:
             first_player, second_player = self.ranking[0], self.ranking[1]
-            if (first_player in team_1 and second_player in team_1) or (
-                    first_player in team_2 and second_player in team_2):
+            if (first_player in self.team_1 and second_player in self.team_1) or (
+                    first_player in self.team_2 and second_player in self.team_2):
                 self.ranking.extend(i for i in range(4) if i not in self.ranking)  # 剩下的按出牌顺序补全
                 self.update_level()
                 return True
@@ -149,9 +146,8 @@ class GuandanGame:
 
     def update_level(self):
         """升级级牌"""
-        team_1 = {0, 2}
         first_player = self.ranking[0]  # 第一个打完牌的玩家
-        winning_team = 1 if first_player in team_1 else 2
+        winning_team = 1 if first_player in self.team_1 else 2
         # 确定队友
         teammate = 2 if first_player == 0 else 0 if first_player == 2 else 3 if first_player == 1 else 1
 
@@ -176,8 +172,9 @@ class GuandanGame:
 
         while True:
             if self.play_turn():
-                round_history = [self.recent_actions[i] for i in range(4)]
-                self.history.append(round_history)
+                if self.current_player != 0:
+                    round_history = [self.recent_actions[i] for i in range(4)]
+                    self.history.append(round_history)
                 if self.print_history:
                     for i in range(len(self.history)):
                         self.log(self.history[i])
@@ -191,6 +188,6 @@ class GuandanGame:
             print(f"🃏 场上最新出牌：{' '.join(self.last_play)}\n")
 
 if __name__ == "__main__":
-    game = GuandanGame(active_level=None,verbose=True,print_history=False)
+    game = GuandanGame(active_level=None,verbose=True,print_history=True)
     game.play_game()
 
