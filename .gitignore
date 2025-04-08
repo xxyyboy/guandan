@@ -6,4 +6,5 @@ env/
 build/
 *.pyc
 *.pyd
+*.c
 __pycache__/
