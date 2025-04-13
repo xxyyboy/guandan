@@ -1,5 +1,8 @@
 # guandan
  掼蛋强化学习
+
+![Static Badge](https://img.shields.io/github%2Fstars%2F746505972%2Fguandan)
+![Static Badge](https://img.shields.io/badge/ver.-0.1.1-purple)
 ## 2025/4/7
 ### 强化学习组：
 ✅ 现在支持`接风`规则
