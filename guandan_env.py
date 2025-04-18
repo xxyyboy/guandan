@@ -2,6 +2,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from get_actions import enumerate_colorful_actions
 import random
 from collections import Counter
 try:
@@ -13,6 +14,10 @@ try:
     from c_give_cards import create_deck, shuffle_deck, deal_cards
 except ImportError:
     from give_cards import create_deck, shuffle_deck, deal_cards
+
+import json
+with open("doudizhu_actions.json", "r", encoding="utf-8") as f:
+    M = json.load(f)
 RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
 
 class Player:
@@ -45,6 +50,7 @@ class GuandanGame:
         self.team_2 = {1, 3}
         self.is_free_turn=True
         self.jiefeng = False
+        self.winning_team = None
 
         # **手牌排序**
         for player in self.players:
@@ -151,6 +157,15 @@ class GuandanGame:
                         break
         return move
 
+    def get_valid_action_mask(hand, M, level_rank):
+        mask = np.zeros(len(M), dtype=np.float32)
+        for action in M:
+            action_id = action['id']
+            combos = enumerate_colorful_actions(action, hand, level_rank)
+            if combos:  # 至少有一种组合可用
+                mask[action_id] = 1.0
+        return mask
+
     def ai_play(self, player):
         """AI 出牌逻辑（随机选择合法且能压过上家的出牌）"""
 
@@ -160,7 +175,7 @@ class GuandanGame:
             self.current_player = (self.current_player + 1) % 4
 
             return self.check_game_over()
-        
+
         player_hand = player.hand
 
         if self.current_player == 0:  # ✅ 玩家 0 用策略模型
@@ -168,7 +183,7 @@ class GuandanGame:
             state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0)  # (1, 3049)
 
             # 1. 模型推理
-            probs = actor(state_tensor, mask=get_valid_action_mask(player.hand, M, self.active_level))  # (1, len(M))
+            probs = actor(state_tensor, mask=self.get_valid_action_mask(player.hand, M, self.active_level))  # (1, len(M))
             action_id = torch.multinomial(probs, 1).item()
             action_struct = M[action_id]
 
@@ -201,9 +216,10 @@ class GuandanGame:
 
                     if self.is_free_turn:
                         self.is_free_turn = False
-
             else:
-                chosen_move = []
+                self.log(f"玩家 {self.current_player + 1} Pass")
+                self.pass_count += 1
+                self.recent_actions[self.current_player] = ['Pass']  # 记录 Pass
         else:
 
             possible_moves = self.get_possible_moves(player_hand)
@@ -284,8 +300,6 @@ class GuandanGame:
         for i, player in enumerate(self.ranking):
             self.log(f"{ranks[i]}：玩家 {player + 1}")
 
-
-
     def play_game(self):
         """执行一整局游戏"""
         self.log(f"\n🎮 游戏开始！当前级牌：{RANKS[self.active_level - 2]}")
@@ -314,38 +328,38 @@ class GuandanGame:
         obs = np.zeros(3049)  # ✅ 修正 obs 长度
 
         # 1️⃣ **当前玩家的手牌 (108 维)**
-        for card in self.game.players[self.game.current_player].hand:
+        for card in self.players[self.current_player].hand:
             obs[self.card_to_index(card)] = 1  # ✅ 确保 `hand` 是列表
 
         # 2️⃣ **其他玩家手牌 (3 维，表示手牌数量)**
         offset = 108
-        for i, player in enumerate(self.game.players):
-            if i != self.game.current_player:
+        for i, player in enumerate(self.players):
+            if i != self.current_player:
                 obs[offset + i] = min(len(player.hand), 26) / 26.0  # ✅ 归一化到 [0,1]
         offset += 3  # ✅ 其他玩家手牌数量 (3 维)
 
         # 3️⃣ **每个玩家最近动作 (108 * 4 = 432 维)**
         for i in range(4):
-            action = self.game.recent_actions.get(i, [])  # ✅ 确保 `recent_actions[i]` 是列表
+            action = self.recent_actions.get(i, [])  # ✅ 确保 `recent_actions[i]` 是列表
             for card in action:
                 obs[offset + i * 108 + self.card_to_index(card)] = 1
         offset += 108 * 4
 
         # 4️⃣ **其他玩家已出的牌 (108 * 3 = 324 维)**
-        for i, player in enumerate(self.game.players):
-            if i != self.game.current_player:
+        for i, player in enumerate(self.players):
+            if i != self.current_player:
                 for card in player.played_cards:
                     obs[offset + i * 108 + self.card_to_index(card)] = 1
         offset += 108 * 3
 
         # 5️⃣ **当前级牌 (13 维)**
-        obs[offset + self.level_card_to_index(self.game.active_level)] = 1
+        obs[offset + self.level_card_to_index(self.active_level)] = 1
         offset += 13
 
         # 6️⃣ **最近 5 轮历史 (108 * 4 * 5 = 2160 维)**
-        history_length = min(5, len(self.game.history))  # ✅ 确保访问最近 5 轮
+        history_length = min(5, len(self.history))  # ✅ 确保访问最近 5 轮
         for round_idx in range(history_length):
-            round_actions = self.game.history[-(history_length - round_idx)]  # 取最近 5 轮
+            round_actions = self.history[-(history_length - round_idx)]  # 取最近 5 轮
             for player_idx, action in enumerate(round_actions):
                 for card in action:
                     obs[offset + round_idx * 108 * 4 + player_idx * 108 + self.card_to_index(card)] = 1
@@ -368,7 +382,7 @@ class GuandanGame:
 
     def compute_reward(self):
         """计算当前的奖励"""
-        if self.game_over():
+        if self.check_game_over():
             # 如果游戏结束，给胜利队伍正奖励，失败队伍负奖励
             return 100 if self.current_player in self.winning_team else -100
 
@@ -380,7 +394,7 @@ class GuandanGame:
         """
         牌面转换为索引
         """
-        card_map = {card: i for i, card in enumerate(self.game.rules.CARD_RANKS.keys())}
+        card_map = {card: i for i, card in enumerate(self.rules.CARD_RANKS.keys())}
         return card_map.get(card, 0)
 
     def level_card_to_index(self, level_card):
