@@ -1,7 +1,4 @@
 import numpy as np
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
 from get_actions import enumerate_colorful_actions
 import random
 from collections import Counter
@@ -9,15 +6,11 @@ try:
     from c_rule import Rules  # 导入 Cython 版本
 except ImportError:
     from rule import Rules  # 退回 Python 版本
-
 try:
     from c_give_cards import create_deck, shuffle_deck, deal_cards
 except ImportError:
     from give_cards import create_deck, shuffle_deck, deal_cards
 
-import json
-with open("doudizhu_actions.json", "r", encoding="utf-8") as f:
-    M = json.load(f)
 RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
 
 class Player:
@@ -44,13 +37,14 @@ class GuandanGame:
         self.pass_count = 0  # 记录连续 Pass 的次数
         self.user_player = user_player - 1 if user_player else None  # 转换为索引（0~3）
         self.ranking = []  # 存储出完牌的顺序
-        self.recent_actions = {i: [] for i in range(4)}
+        self.recent_actions = [[],[],[],[]]
         self.verbose = verbose  # 控制是否输出文本
         self.team_1 = {0, 2}
         self.team_2 = {1, 3}
         self.is_free_turn=True
         self.jiefeng = False
         self.winning_team = None
+        self.is_game_over = False
 
         # **手牌排序**
         for player in self.players:
@@ -157,7 +151,7 @@ class GuandanGame:
                         break
         return move
 
-    def get_valid_action_mask(hand, M, level_rank):
+    def get_valid_action_mask(self,hand, M, level_rank):
         mask = np.zeros(len(M), dtype=np.float32)
         for action in M:
             action_id = action['id']
@@ -178,85 +172,41 @@ class GuandanGame:
 
         player_hand = player.hand
 
-        if self.current_player == 0:  # ✅ 玩家 0 用策略模型
-            state = self._get_obs()  # (3049,)
-            state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0)  # (1, 3049)
+        possible_moves = self.get_possible_moves(player_hand)
+        if not self.is_free_turn:
+            possible_moves.append([])
 
-            # 1. 模型推理
-            probs = actor(state_tensor, mask=self.get_valid_action_mask(player.hand, M, self.active_level))  # (1, len(M))
-            action_id = torch.multinomial(probs, 1).item()
-            action_struct = M[action_id]
-
-            # 2. 枚举所有合法出牌组合（带花色）
-            combos = enumerate_colorful_actions(action_struct, player.hand, self.active_level)
-            if combos:
-                chosen_move = random.choice(combos)
-                if not chosen_move:
-                    self.log(f"玩家 {self.current_player + 1} Pass")
-                    self.pass_count += 1
-                    self.recent_actions[self.current_player] = ['Pass']  # 记录 Pass
-                else:
-                    # 如果 chosen_move 不为空，继续进行正常的出牌逻辑
-                    self.last_play = chosen_move
-                    self.last_player = self.current_player
-                    for card in chosen_move:
-                        player_hand.remove(card)
-                    self.log(f"玩家 {self.current_player + 1} 出牌: {' '.join(chosen_move)}")
-                    self.recent_actions[self.current_player] = list(chosen_move)  # 记录出牌
-                    self.jiefeng = False
-                    if not player_hand:  # 玩家出完牌
-                        self.log(f"\n🎉 玩家 {self.current_player + 1} 出完所有牌！\n")
-                        self.ranking.append(self.current_player)
-                        if len(self.ranking) <= 2:
-                            self.jiefeng = True
-
-                    self.pass_count = 0
-                    if not player_hand:
-                        self.pass_count -= 1
-
-                    if self.is_free_turn:
-                        self.is_free_turn = False
-            else:
-                self.log(f"玩家 {self.current_player + 1} Pass")
-                self.pass_count += 1
-                self.recent_actions[self.current_player] = ['Pass']  # 记录 Pass
+        if not possible_moves:
+            self.log(f"玩家 {self.current_player + 1} Pass")
+            self.pass_count += 1
+            self.recent_actions[self.current_player] = ['Pass']  # 记录 Pass
         else:
-
-            possible_moves = self.get_possible_moves(player_hand)
-            if not self.is_free_turn:
-                possible_moves.append([])
-
-            if not possible_moves:
+            chosen_move = random.choice(possible_moves) # 随机选择一个合法的牌型
+            if not chosen_move:
                 self.log(f"玩家 {self.current_player + 1} Pass")
                 self.pass_count += 1
                 self.recent_actions[self.current_player] = ['Pass']  # 记录 Pass
             else:
-                chosen_move = random.choice(possible_moves) # 随机选择一个合法的牌型
-                if not chosen_move:
-                    self.log(f"玩家 {self.current_player + 1} Pass")
-                    self.pass_count += 1
-                    self.recent_actions[self.current_player] = ['Pass']  # 记录 Pass
-                else:
-                    # 如果 chosen_move 不为空，继续进行正常的出牌逻辑
-                    self.last_play = chosen_move
-                    self.last_player = self.current_player
-                    for card in chosen_move:
-                        player_hand.remove(card)
-                    self.log(f"玩家 {self.current_player + 1} 出牌: {' '.join(chosen_move)}")
-                    self.recent_actions[self.current_player] = list(chosen_move)  # 记录出牌
-                    self.jiefeng = False
-                    if not player_hand:  # 玩家出完牌
-                        self.log(f"\n🎉 玩家 {self.current_player + 1} 出完所有牌！\n")
-                        self.ranking.append(self.current_player)
-                        if len(self.ranking)<=2:
-                            self.jiefeng=True
+                # 如果 chosen_move 不为空，继续进行正常的出牌逻辑
+                self.last_play = chosen_move
+                self.last_player = self.current_player
+                for card in chosen_move:
+                    player_hand.remove(card)
+                self.log(f"玩家 {self.current_player + 1} 出牌: {' '.join(chosen_move)}")
+                self.recent_actions[self.current_player] = list(chosen_move)  # 记录出牌
+                self.jiefeng = False
+                if not player_hand:  # 玩家出完牌
+                    self.log(f"\n🎉 玩家 {self.current_player + 1} 出完所有牌！\n")
+                    self.ranking.append(self.current_player)
+                    if len(self.ranking)<=2:
+                        self.jiefeng=True
 
-                    self.pass_count = 0
-                    if not player_hand:
-                        self.pass_count -= 1
+                self.pass_count = 0
+                if not player_hand:
+                    self.pass_count -= 1
 
-                    if self.is_free_turn:
-                        self.is_free_turn = False
+                if self.is_free_turn:
+                    self.is_free_turn = False
 
         self.current_player = (self.current_player + 1) % 4
         return self.check_game_over()
@@ -270,12 +220,14 @@ class GuandanGame:
                     first_player in self.team_2 and second_player in self.team_2):
                 self.ranking.extend(i for i in range(4) if i not in self.ranking)  # 剩下的按出牌顺序补全
                 self.update_level()
+                self.is_game_over = True
                 return True
 
         # **如果 3 人出完了，自动补全最后一名，游戏结束**
         if len(self.ranking) == 3:
             self.ranking.append(next(i for i in range(4) if i not in self.ranking))  # 找出最后一个玩家
             self.update_level()
+            self.is_game_over = True
             return True
 
         return False
@@ -340,7 +292,7 @@ class GuandanGame:
 
         # 3️⃣ **每个玩家最近动作 (108 * 4 = 432 维)**
         for i in range(4):
-            action = self.recent_actions.get(i, [])  # ✅ 确保 `recent_actions[i]` 是列表
+            action = self.recent_actions[i] if self.recent_actions[i] else []
             for card in action:
                 obs[offset + i * 108 + self.card_to_index(card)] = 1
         offset += 108 * 4
@@ -430,4 +382,6 @@ class GuandanGame:
         [0, 0, 1] -> 拒绝辅助
         """
         return [1, 0, 0]  # 目前默认"不能辅助"，后续可修改逻辑
-
+if __name__ == "__main__":
+    game = GuandanGame(user_player=None,active_level=None,verbose=True,print_history=True)
+    game.play_game()
