@@ -155,6 +155,10 @@ class GuandanGame:
                         break
         return move
 
+    def actor_play(self,player):
+
+        return self.check_game_over()
+
     def ai_play(self, player):
         """AI 出牌逻辑（随机选择合法且能压过上家的出牌）"""
 

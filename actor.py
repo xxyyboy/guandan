@@ -103,7 +103,7 @@ def run_training(episodes=1000):
                 # 1. 模型推理
                 state = game._get_obs()
                 state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
-                mask = torch.tensor(game.get_valid_action_mask(player.hand, M, game.active_level)).unsqueeze(0)
+                mask = torch.tensor(game.get_valid_action_mask(player.hand, M, game.active_level,game.last_play)).unsqueeze(0)
                 probs = actor(state_tensor, mask)
                 action_id = torch.multinomial(probs, 1).item()
                 action_struct = M_id_dict[action_id]

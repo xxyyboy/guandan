@@ -1,7 +1,7 @@
 import numpy as np
-from get_actions import enumerate_colorful_actions
+from get_actions import enumerate_colorful_actions, CARD_RANKS, SUITS
 import random
-from collections import Counter
+from collections import Counter,defaultdict
 try:
     from c_rule import Rules  # 导入 Cython 版本
 except ImportError:
@@ -58,6 +58,48 @@ class GuandanGame:
     def sort_cards(self, cards):
         """按牌的大小排序（从大到小）"""
         return sorted(cards, key=lambda card: self.rules.get_rank(card), reverse=True)
+
+    def map_cards_to_action(self,cards, M, level_rank):
+        """
+        从实际出过的牌中（带花色），判断其结构动作（含同花顺识别）。
+        """
+        point_count = defaultdict(int)
+        suits = set()
+
+        for card in cards:
+            for rank in RANKS + ['小王', '大王']:
+                if rank in card:
+                    raw_point = CARD_RANKS[rank]
+                    logic_point = 15 if raw_point == level_rank else raw_point
+                    point_count[logic_point] += 1
+                    break
+            # 提取花色
+            for s in SUITS:
+                if card.startswith(s):
+                    suits.add(s)
+                    break
+
+        # 构建点数序列（带重复）
+        logic_points = []
+        for pt, count in sorted(point_count.items()):
+            logic_points.extend([pt] * count)
+
+        # 🔍 同花顺检测
+        if len(cards) == 5 and len(point_count) == 5:
+            sorted_points = sorted(point_count.keys())
+            if all(sorted_points[i + 1] - sorted_points[i] == 1 for i in range(4)):
+                if len(suits) == 1:
+                    # 是同花顺 → 去 M 中找类型为 straight_flush
+                    for action in M:
+                        if action['type'] == 'flush_rocket' and sorted(action['points']) == sorted_points:
+                            return action
+
+        # 🔁 普通结构匹配
+        for action in M:
+            if sorted(action['points']) == sorted(logic_points):
+                return action
+
+        return None
 
     def play_turn(self):
         """执行当前玩家的回合"""
@@ -151,13 +193,83 @@ class GuandanGame:
                         break
         return move
 
-    def get_valid_action_mask(self,hand, M, level_rank):
+    def can_beat(self,curr_action, prev_action):
+        """
+        判断结构动作 curr_action 是否能压过 prev_action
+        """
+        # 如果没人出牌，当前动作永远可以出
+        if prev_action["type"] == "None":
+            return True
+
+        curr_type = curr_action["type"]
+        prev_type = prev_action["type"]
+
+        # 炸弹类型（根据牌力表）
+        bomb_power = {
+            "joker_bomb": 6,
+            "8_bomb": 5,
+            "7_bomb": 4,
+            "6_bomb": 3,
+            "flush_rocket": 2,
+            "5_bomb": 1,
+            "4_bomb": 0
+        }
+
+        is_curr_bomb = curr_type in bomb_power
+        is_prev_bomb = prev_type in bomb_power
+
+        # ✅ 炸弹能压非炸弹
+        if is_curr_bomb and not is_prev_bomb:
+            return True
+        if not is_curr_bomb and is_prev_bomb:
+            return False
+
+        # ✅ 两个都是炸弹 → 比炸弹牌力 → 再比 logic_point
+        if is_curr_bomb and is_prev_bomb:
+            if bomb_power[curr_type] > bomb_power[prev_type]:
+                return True
+            elif bomb_power[curr_type] < bomb_power[prev_type]:
+                return False
+            else:  # 相同牌力 → 比点数
+                return curr_action["logic_point"] > prev_action["logic_point"]
+
+        # ✅ 非炸弹时，牌型必须相同才可比
+        if curr_type != prev_type:
+            return False
+
+        # ✅ 非炸弹，牌型相同 → 比 logic_point
+        return curr_action["logic_point"] > prev_action["logic_point"]
+
+    def get_valid_action_mask(self,hand, M, level_rank, last_action):
+        """
+        返回 mask 向量，标记每个结构动作在当前手牌下是否合法。
+        如果 last_action 为 None，则为主动出牌，可出任意合法牌型；
+        否则为跟牌回合，只能出能压过 last_action 的合法牌。
+        """
         mask = np.zeros(len(M), dtype=np.float32)
+        if not last_action:
+            last_action = []
+        last_action = self.map_cards_to_action(last_action, M, level_rank)
         for action in M:
             action_id = action['id']
             combos = enumerate_colorful_actions(action, hand, level_rank)
-            if combos:  # 至少有一种组合可用
+            if not combos:
+                continue  # 当前手牌无法组成该结构
+
+            if last_action is None:
+                # 主动出牌：只要能组成即可
                 mask[action_id] = 1.0
+            else:
+                # 跟牌出牌：还要能压上上家
+                if self.can_beat(action, last_action):
+                    mask[action_id] = 1.0
+        if not self.is_free_turn:
+            # 永远允许出 “None” 结构（pass）
+            for action in M:
+                if action['type'] == 'None':
+                    mask[action['id']] = 1.0
+                    break
+
         return mask
 
     def ai_play(self, player):
