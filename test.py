@@ -100,9 +100,3 @@ def can_beat(curr_action, prev_action):
     return curr_action["logic_point"] > prev_action["logic_point"]
 
 
-
-
-print(map_cards_to_action(['梅花9'],M,6))
-print(map_cards_to_action([ '梅花2' ,'红桃3', '黑桃4', '梅花5', '方块A'],M,6))
-print(can_beat(map_cards_to_action(['梅花2' ,'红桃3', '黑桃4', '梅花5','方块A'],M,6),
-               map_cards_to_action(['梅花9'],M,6)))
