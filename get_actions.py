@@ -120,6 +120,14 @@ def enumerate_colorful_actions(action, hand, level_rank: int):
     if not structured_combos:
         raw_combos = find_combinations(action['points'], point_to_cards)
 
+    if action['type'] == 'flush_rocket':
+        filtered_combos = []
+        for combo in raw_combos:
+            suits = [card[:2] for card in combo]
+            if all(s == suits[0] for s in suits):  # 花色必须完全一致
+                filtered_combos.append(combo)
+        raw_combos = filtered_combos
+
     # 去重
     seen = set()
     unique_combos = []
@@ -173,4 +181,8 @@ obs = np.zeros(108)
 # 1️⃣ 当前玩家手牌 (108)
 obs[:108] = encode_hand_108(hand1)
 print(obs)
+hand = ['大王', '小王', '方块8', '黑桃A', '方块K', '方块K', '黑桃K', '梅花Q', '黑桃Q', '方块J', '梅花10', '方块10', '黑桃10', '方块9', '红桃9', '方块7', '梅花7', '黑桃6', '方块6', '红桃6', '红桃5', '方块5', '梅花4', '方块4', '方块3', '红桃2', '方块2']
+#mask = torch.tensor(self.get_valid_action_mask(player.hand, M, self.active_level, self.last_play)).unsqueeze(0)
+a={"type":"flush_rocket","points":[9,10,11,12,13],"logic_point":9,"a_as":"high","id":373}
+print(enumerate_colorful_actions(a, hand, level_rank=8))
 '''

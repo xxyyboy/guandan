@@ -201,7 +201,10 @@ class GuandanGame:
         """
         # 如果没人出牌，当前动作永远可以出
         if prev_action["type"] == "None":
-            return True
+            if curr_action["type"] == "None":
+                return False
+            else:
+                return True
 
         curr_type = curr_action["type"]
         prev_type = prev_action["type"]
@@ -267,10 +270,7 @@ class GuandanGame:
                     mask[action_id] = 1.0
         if not self.is_free_turn:
             # 永远允许出 “None” 结构（pass）
-            for action in M:
-                if action['type'] == 'None':
-                    mask[action['id']] = 1.0
-                    break
+            mask[0] = 1.0
 
         return mask
 
