@@ -1,9 +1,9 @@
 # guandan
  掼蛋强化学习
 
-![Static Badge](https://img.shields.io/badge/ver.-0.3.0-yellow)
+![Static Badge](https://img.shields.io/badge/ver.-0.3.2-yellow)
 ## 2025/4/25
-### 建立A2C网络，能够训练、预测。还剩掩码处可能存在小问题
+### 建立A2C网络，能够训练、预测。
 
 `ActorNet` 输出结构动作 `action_id` 的概率分布（考虑了 mask）；
 

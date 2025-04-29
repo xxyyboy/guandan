@@ -753,20 +753,13 @@ def main():
     if 'game_log' not in st.session_state:
         st.session_state.game_log = []
 
-    # 游戏控制侧边栏（修改为使用form避免重复提交）
-    with st.sidebar:
-        with st.form("game_setup"):
-            st.header("游戏设置")
-            user_position = st.selectbox("选择你的位置", [1, 2, 3, 4], index=0)
-            level_card = st.selectbox("选择级牌", RANKS, index=0)
-            submitted = st.form_submit_button("开始游戏")
 
-            if submitted:
-                level_index = RANKS.index(level_card) + 2
-                st.session_state.game = GuandanGame(user_player=user_position, active_level=level_index)
-                st.session_state.game_log = []
-                st.session_state.game_over = False
-                st.rerun()  # 使用正式版rerun替代experimental_rerun
+
+
+    st.session_state.game = GuandanGame(user_player=1)
+    st.session_state.game_log = []
+    st.session_state.game_over = False
+    st.rerun()  # 使用正式版rerun替代experimental_rerun
 
     # 游戏主界面（添加容器避免闪烁）
     game_container = st.container()

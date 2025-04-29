@@ -797,38 +797,6 @@ class GuandanGame:
         """
         return [1, 0, 0]  # 目前默认"不能辅助"，后续可修改逻辑
 
-    def user_submit_play(self, selected_cards):
-        """前端调用：用户出指定牌"""
-
-        player = self.players[self.user_player]
-
-        # 调用已有 user_play 的逻辑
-        self.user_play(player)
-
-        self.advance_turn()
-
-    def user_submit_pass(self):
-        """前端调用：用户选择PASS"""
-
-        if self.is_free_turn:
-            raise ValueError("自由回合不能PASS，必须出牌。")
-
-        self.recent_actions[self.current_player] = ['Pass']
-        self.players[self.user_player].last_played_cards = ['Pass']
-        self.pass_count += 1
-
-        self.advance_turn()
-
-    def advance_turn(self):
-        """统一推进到下一个人的回合，并让AI自动出完"""
-        self.current_player = (self.current_player + 1) % 4
-
-        while self.current_player != self.user_player and not self.is_game_over:
-            over = self.play_turn()
-            if over:
-                self.is_game_over = True
-                break
-
 
 
 if __name__ == "__main__":
