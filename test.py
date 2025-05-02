@@ -2,8 +2,7 @@ import numpy as np
 from get_actions import enumerate_colorful_actions, CARD_RANKS, SUITS,encode_hand_108
 import random
 from collections import Counter, defaultdict
-import streamlit as st
-import time
+
 try:
     from c_rule import Rules  # 导入 Cython 版本
 except ImportError:
@@ -53,18 +52,23 @@ class Player:
 
 
 class GuandanGame:
-    def __init__(self, user_player=None, active_level=None):
+    def __init__(self, user_player=None, active_level=None, verbose=True, print_history=False,test=False):
+        # **两队各自的级牌**
+        self.print_history = print_history
         self.active_level = active_level if active_level else random.choice(range(2, 15))
+        # 历史记录，记录最近 20 轮的出牌情况（每轮包含 4 个玩家的出牌）
         self.history = []
+        # **只传当前局的有效级牌**
         self.rules = Rules(self.active_level)
-        self.players = [Player(hand) for hand in deal_cards(shuffle_deck(create_deck()))]
-        self.current_player = 0
-        self.last_play = None
-        self.last_player = -1
-        self.pass_count = 0
-        self.user_player = user_player - 1 if user_player else None
-        self.ranking = []
+        self.players = [Player(hand) for hand in deal_cards(shuffle_deck(create_deck()))]  # 发牌
+        self.current_player = 0  # 当前出牌玩家
+        self.last_play = None  # 记录上一手牌
+        self.last_player = -1  # 记录上一手是谁出的
+        self.pass_count = 0  # 记录连续 Pass 的次数
+        self.user_player = user_player - 1 if user_player else None  # 转换为索引（0~3）
+        self.ranking = []  # 存储出完牌的顺序
         self.recent_actions = [[], [], [], []]
+        self.verbose = verbose  # 控制是否输出文本
         self.team_1 = {0, 2}
         self.team_2 = {1, 3}
         self.is_free_turn = True
@@ -72,16 +76,17 @@ class GuandanGame:
         self.winning_team = 0
         self.is_game_over = False
         self.upgrade_amount = 0
-        # 手牌排序
+        self.test=False
+
+        # **手牌排序**
         for player in self.players:
             player.hand = self.sort_cards(player.hand)
 
 
     def log(self, message):
-        """记录游戏日志"""
-        st.session_state.game_log.append(message)
-        if len(st.session_state.game_log) > 100:  # 限制日志长度
-            st.session_state.game_log.pop(0)
+        """控制是否打印消息"""
+        if self.verbose:
+            print(message)
 
     def sort_cards(self, cards):
         """按牌的大小排序（从大到小）"""
@@ -130,14 +135,9 @@ class GuandanGame:
 
         return None
 
-    def play_turn(self):
-        """执行当前玩家的回合"""
-
-        player = self.players[self.current_player]  # 获取当前玩家对象
-
+    def maybe_reset_turn(self):
         # **计算当前仍有手牌的玩家数**
         active_players = 4 - len(self.ranking)
-
         # **如果 Pass 的人 == "当前有手牌的玩家数 - 1"，就重置轮次**
         if self.pass_count >= (active_players - 1) and self.current_player not in self.ranking:
             if self.jiefeng:
@@ -155,11 +155,6 @@ class GuandanGame:
                 self.last_play = None  # ✅ 允许新的自由出牌
                 self.pass_count = 0  # ✅ Pass 计数归零
                 self.is_free_turn = True
-
-        if self.user_player == self.current_player:
-            result = self.user_play(player)
-        else:
-            result = self.ai_play(player)
         # **记录最近 5 轮历史**
         if self.current_player == 0:
             round_history = [self.recent_actions[i] for i in range(4)]
@@ -169,6 +164,19 @@ class GuandanGame:
             if len(self.history) > 20:
                 self.history.pop(0)
             '''
+
+    def play_turn(self):
+        """执行当前玩家的回合"""
+        player = self.players[self.current_player]  # 获取当前玩家对象
+
+        if self.user_player == self.current_player:
+            result = self.user_play(player)
+        else:
+            if self.test and self.current_player == 0:
+                result = self.actor_play(player)
+            else:
+                result = self.ai_play(player)
+
         return result
 
     def get_possible_moves(self, player_hand):
@@ -406,156 +414,119 @@ class GuandanGame:
         return self.check_game_over()
 
     def user_play(self, player):
-        """用户出牌逻辑（Streamlit版本）"""
+        """用户出牌逻辑"""
         if self.current_player in self.ranking:
-            self.recent_actions[self.current_player] = []
+            self.recent_actions[self.current_player] = []  # 记录空列表
             self.current_player = (self.current_player + 1) % 4
             return self.check_game_over()
 
-        # 显示AI建议
-        suggestions = self.get_ai_suggestions()
-        with st.expander("AI建议"):
-            for sug in suggestions:
-                st.write(sug)
+        while True:
+            self.show_user_hand()  # 显示手牌
+            choice = input("\n请选择要出的牌（用空格分隔），或直接回车跳过（PASS）： ").strip()
 
-        # 显示手牌并获取选择
-        selected_cards = self.show_user_hand()
-
-        # 出牌和Pass按钮
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("出牌", disabled=not selected_cards):
-                if self.validate_and_play(selected_cards, player):
-                    return self.advance_turn()
-
-        with col2:
-            if st.button("Pass", disabled=self.is_free_turn):
-                self.log(f"玩家 {self.current_player + 1} Pass")
+            # **用户选择 PASS**
+            if choice == "" or choice.lower() == "pass":
+                if self.is_free_turn:
+                    print("❌ 你的输入无效，自由回合必须出牌！")
+                    continue
+                print(f"玩家 {self.current_player + 1} 选择 PASS")
                 self.pass_count += 1
-                self.recent_actions[self.current_player] = ['Pass']
-                return self.advance_turn()
+                self.recent_actions[self.current_player] = ['Pass']  # ✅ 记录 PASS
+                break
 
-        return False
+            # **解析用户输入的牌**
+            selected_cards = choice.split()
 
-    def validate_and_play(self, selected_cards, player):
-        """验证并执行出牌"""
-        # 检查牌是否在手牌中
-        if not all(card in player.hand for card in selected_cards):
-            st.error("❌ 你的输入无效，请确保牌在你的手牌中！")
-            return False
+            # **检查牌是否在手牌中**
+            if not all(card in player.hand for card in selected_cards):
+                print("❌ 你的输入无效，请确保牌在你的手牌中！")
+                continue  # 重新输入
 
-        # 检查牌是否合法
-        if not self.rules.is_valid_play(selected_cards):
-            st.error("❌ 你的出牌不符合规则，请重新选择！")
-            return False
+            # **检查牌是否合法**
+            if not self.rules.is_valid_play(selected_cards):
+                print("❌ 你的出牌不符合规则，请重新选择！")
+                continue  # 重新输入
 
-        last_action = self.map_cards_to_action(self.last_play, M, self.active_level)
-        chosen = self.map_cards_to_action(selected_cards, M, self.active_level)
+            last_action = self.map_cards_to_action(self.last_play, M, self.active_level)
+            chosen = self.map_cards_to_action(selected_cards, M, self.active_level)
+            # **检查是否能压过上一手牌**
+            if  not self.can_beat(chosen,last_action):
+                print("❌ 你的牌无法压过上一手牌，请重新选择！")
+                continue  # 重新输入
 
-        # 检查是否能压过上一手牌
-        if not self.can_beat(chosen, last_action):
-            st.error("❌ 你的牌无法压过上一手牌，请重新选择！")
-            return False
+            # **成功出牌**
+            for card in selected_cards:
+                player.played_cards.append(card)
+                player.hand.remove(card)  # 从手牌中移除
+            self.last_play = selected_cards  # 记录这次出牌
+            self.last_player = self.current_player  # 记录是谁出的
+            self.recent_actions[self.current_player] = list(selected_cards)  # 记录出牌历史
+            self.jiefeng = False
+            print(f"玩家 {self.current_player + 1} 出牌: {' '.join(selected_cards)}")
 
-        # 成功出牌
-        for card in selected_cards:
-            player.played_cards.append(card)
-            player.hand.remove(card)
-        self.last_play = selected_cards
-        self.last_player = self.current_player
-        self.recent_actions[self.current_player] = list(selected_cards)
-        self.jiefeng = False
-        self.log(f"玩家 {self.current_player + 1} 出牌: {' '.join(selected_cards)}")
+            # **如果手牌为空，玩家出完所有牌**
+            if not player.hand:
+                print(f"\n🎉 玩家 {self.current_player + 1} 出完所有牌！\n")
+                self.ranking.append(self.current_player)
+                if len(self.ranking) <= 2:
+                    self.jiefeng = True
 
-        # 如果手牌为空，玩家出完所有牌
-        if not player.hand:
-            self.log(f"\n🎉 玩家 {self.current_player + 1} 出完所有牌！\n")
-            self.ranking.append(self.current_player)
-            if len(self.ranking) <= 2:
-                self.jiefeng = True
+            # **出牌成功，Pass 计数归零**
+            self.pass_count = 0
+            if not player.hand:
+                self.pass_count -= 1
+            if self.is_free_turn:
+                self.is_free_turn = False
+            break
 
-        self.pass_count = 0
-        if not player.hand:
-            self.pass_count -= 1
-        if self.is_free_turn:
-            self.is_free_turn = False
+        # **切换到下一个玩家**
+        player.last_played_cards = self.recent_actions[self.current_player]
+        self.current_player = (self.current_player + 1) % 4
 
-        return True
+        return self.check_game_over()
+
     def get_ai_suggestions(self):
-        """
-        Generates top 3 AI move suggestions for the current player (intended for user player).
-        Returns a list of formatted strings describing the suggestions.
-        """
-        if self.current_player != self.user_player:
-            return ["AI suggestions only available on your turn."]
-
-        player = self.players[self.current_player]
+        """返回AI给当前玩家的3个建议字符串"""
         suggestions = []
+        player = self.players[self.current_player]
+        state = self._get_obs()
+        state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
+        mask = torch.tensor(self.get_valid_action_mask(player.hand, M, self.active_level, self.last_play)).unsqueeze(0)
 
-        try:
-            state = self._get_obs()
-            state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
-            mask = torch.tensor(
-                self.get_valid_action_mask(player.hand, M, self.active_level, self.last_play)).unsqueeze(0)
+        global actor
+        with torch.no_grad():
+            all_probs = actor(state_tensor, mask)
 
-            global actor  # Assuming actor is loaded globally
-            with torch.no_grad():
-                all_probs = actor(state_tensor, mask)
+        top_k_orig_probs, top_k_indices = torch.topk(all_probs, k=3, dim=-1)
 
-            top_k_orig_probs, top_k_indices = torch.topk(all_probs, k=3, dim=-1)
+        valid_top_k_probs = top_k_orig_probs[top_k_orig_probs > 0]
+        if valid_top_k_probs.numel() > 0:
+            normalized_top_k_probs_tensor = F.softmax(valid_top_k_probs, dim=-1)
+            normalized_top_k_probs = torch.zeros_like(top_k_orig_probs)
+            normalized_top_k_probs[top_k_orig_probs > 0] = normalized_top_k_probs_tensor
+        else:
+            normalized_top_k_probs = torch.zeros_like(top_k_orig_probs)
 
-            # Apply Softmax to ONLY the top K probabilities for relative comparison
-            valid_top_k_probs = top_k_orig_probs[top_k_orig_probs > 0]
-            if valid_top_k_probs.numel() > 0:
-                normalized_top_k_probs_tensor = F.softmax(valid_top_k_probs, dim=-1)
-                normalized_top_k_probs = torch.zeros_like(top_k_orig_probs)
-                normalized_top_k_probs[top_k_orig_probs > 0] = normalized_top_k_probs_tensor
-            else:
-                normalized_top_k_probs = torch.zeros_like(top_k_orig_probs)
+        for i in range(top_k_indices.size(1)):
+            action_id = top_k_indices[0, i].item()
+            normalized_prob = normalized_top_k_probs[0, i].item()
 
-            for i in range(top_k_indices.size(1)):
-                action_id = top_k_indices[0, i].item()
-                normalized_prob = normalized_top_k_probs[0, i].item()
-
-                if top_k_orig_probs[0, i].item() > 0:  # Check if it was a valid move initially
-                    action_struct = M_id_dict.get(action_id)
-                    if action_struct:
-                        action_desc = action_struct.get('name', action_struct.get('type', f'动作ID {action_id}'))
+            if top_k_orig_probs[0, i].item() > 0:
+                action_struct = M_id_dict.get(action_id)
+                if action_struct:
+                    action_desc = action_struct.get('name', action_struct.get('type', f'动作ID {action_id}'))
+                    points_str = f" (点数: {action_struct['points']})" if action_struct.get('points') else ""
+                    if action_struct.get('type') == 'None':
+                        action_desc = "Pass (不出)"
                         points_str = ""
-                        if 'points' in action_struct and action_struct['points']:
-                            points_str = f" (点数: {action_struct['points']})"
-                        if action_struct.get('type') == 'None':
-                            action_desc = "Pass (不出)"
-                            points_str = ""
-                        suggestions.append(f"建议 {i + 1}: {action_desc}{points_str} - 相对概率: {normalized_prob:.2%}")
-                    else:
-                        suggestions.append(f"建议 {i + 1}: 未知动作 ID {action_id} - 相对概率: {normalized_prob:.2%}")
+                    suggestions.append(f"建议 {i + 1}: {action_desc}{points_str} - 相对概率: {normalized_prob:.2%}")
                 else:
-                    suggestions.append(f"建议 {i + 1}: (无有效动作)")
+                    suggestions.append(f"建议 {i + 1}: 未知动作 ID {action_id} - 相对概率: {normalized_prob:.2%}")
+            else:
+                suggestions.append(f"建议 {i + 1}: (无有效动作)")
 
-        except Exception as e:
-            suggestions.append(f"Error getting suggestions: {e}")
-
-        # Ensure "Pass" suggestion is included if applicable
-        can_pass = not self.is_free_turn
-        pass_in_suggestions = any("Pass" in s for s in suggestions)
-        if can_pass and not pass_in_suggestions:
-            # Check if Pass action exists and is valid according to the mask
-            pass_action_id = -1
-            for action_id, action_struct in M_id_dict.items():
-                if action_struct.get('type') == 'None':
-                    pass_action_id = action_id
-                    break
-            if pass_action_id != -1 and mask[0, pass_action_id].item() > 0:
-                # If pass is valid but not in top-k, add it manually (or adjust top-k logic)
-                # For simplicity, just noting it might be missing from top 3
-                pass  # Or potentially add: suggestions.append("建议: Pass (不出) - [概率未在Top3]")
-            elif not can_pass:
-                # Remove pass suggestion if it's a free turn
-                suggestions = [s for s in suggestions if "Pass" not in s]
-
-        if not suggestions:
-            suggestions.append("无可用建议。")
+        while len(suggestions) < 3:
+            suggestions.append("建议: 无可用动作")
 
         return suggestions
 
@@ -602,46 +573,26 @@ class GuandanGame:
         for i, player in enumerate(self.ranking):
             self.log(f"{ranks[i]}：玩家 {player + 1}")
 
-    def advance_turn(self):
-        """推进到下一个回合"""
-        player = self.players[self.current_player]
-        player.last_played_cards = self.recent_actions[self.current_player]
-        self.current_player = (self.current_player + 1) % 4
-
-        # 自动进行AI回合
-        while self.current_player != self.user_player and not self.is_game_over:
-            if self.play_turn():  # AI出牌
-                self.is_game_over = True
-                break
-
-        return self.is_game_over
-
     def play_game(self):
-        """执行游戏主循环"""
+        """执行一整局游戏"""
         self.log(f"\n🎮 游戏开始！当前级牌：{RANKS[self.active_level - 2]}")
 
-        while not self.is_game_over:
+        while True:
             if self.play_turn():
                 if self.current_player != 0:
                     round_history = [self.recent_actions[i] for i in range(4)]
                     self.history.append(round_history)
+                if self.print_history:
+                    for i in range(len(self.history)):
+                        self.log(self.history[i])
                 break
-            time.sleep(1)  # 添加延迟使游戏节奏更自然
 
     def show_user_hand(self):
-        """显示用户手牌"""
-        if self.user_player is not None:
-            sorted_hand = self.players[self.user_player].hand
-            st.session_state.user_hand = " ".join(sorted_hand)
-
-            # 创建卡片选择器
-            selected = []
-            cols = st.columns(5)
-            for i, card in enumerate(sorted_hand):
-                with cols[i % 5]:
-                    if st.checkbox(card, key=f"card_{i}"):
-                        selected.append(card)
-            return selected
+        """显示用户手牌（按排序后的顺序）"""
+        sorted_hand = self.players[self.user_player].hand
+        print("\n你的手牌：", " ".join(sorted_hand))
+        if self.last_play:
+            print(f"场上最新出牌：{' '.join(self.last_play)}\n")
 
     def _get_obs(self):
         """
@@ -705,6 +656,17 @@ class GuandanGame:
         assert offset == 3049, f"⚠️ offset 计算错误: 预期 3049, 实际 {offset}"
         return obs
 
+    def compute_reward(self):
+        """计算当前的奖励"""
+        if self.check_game_over():
+            # 如果游戏结束，给胜利队伍正奖励，失败队伍负奖励
+            return 100 if self.current_player in self.winning_team else -100
+
+        # **鼓励 AI 先出完手牌**
+        hand_size = len(self.players[self.current_player].hand)
+        return -hand_size  # 手牌越少，奖励越高
+
+
 
     def level_card_to_index(self, level_card):
         """
@@ -740,86 +702,105 @@ class GuandanGame:
         """
         return [1, 0, 0]  # 目前默认"不能辅助"，后续可修改逻辑
 
+    def submit_user_move(self, selected_cards):
+        """前端提交出牌：selected_cards为list[str]，如 ['红桃3', '黑桃3'] 或 []"""
+        if self.is_game_over:
+            return {"error": "游戏已结束"}
 
-def main():
-    st.title("🎴 AI掼蛋游戏")
+        player = self.players[self.user_player]
 
-    # 初始化session state（新增游戏状态跟踪）
-    if 'game' not in st.session_state:
-        st.session_state.game = None
-        st.session_state.game_over = False
-        st.session_state.auto_play = False
+        if selected_cards == []:  # 选择 PASS
+            if self.is_free_turn:
+                return {"error": "自由回合必须出牌"}
+            self.pass_count += 1
+            self.recent_actions[self.current_player] = ['Pass']
+        else:
+            if not all(card in player.hand for card in selected_cards):
+                return {"error": "出牌不在手牌中"}
 
-    if 'game_log' not in st.session_state:
-        st.session_state.game_log = []
+            if not self.rules.is_valid_play(selected_cards):
+                return {"error": "出牌不合法"}
 
+            if not self.can_beat(self.map_cards_to_action(selected_cards, M, self.active_level),
+                                 self.map_cards_to_action(self.last_play, M, self.active_level)):
+                return {"error": "不能压过上家"}
 
+            for card in selected_cards:
+                player.hand.remove(card)
+                player.played_cards.append(card)
 
+            self.last_play = selected_cards
+            self.last_player = self.current_player
+            self.recent_actions[self.current_player] = selected_cards
+            if not player.hand:
+                self.ranking.append(self.current_player)
+                if len(self.ranking) <= 2:
+                    self.jiefeng = True
+            self.pass_count = 0
+            if self.is_free_turn:
+                self.is_free_turn = False
 
-    st.session_state.game = GuandanGame(user_player=1)
-    st.session_state.game_log = []
-    st.session_state.game_over = False
-    st.rerun()  # 使用正式版rerun替代experimental_rerun
+        self.current_player = (self.current_player + 1) % 4
+        self.maybe_reset_turn()
+        return {"success": True, "game_over": self.check_game_over()}
 
-    # 游戏主界面（添加容器避免闪烁）
-    game_container = st.container()
+    def step(self):
+        """推进一步（仅用于非用户玩家），返回字典说明状态"""
+        if self.is_game_over:
+            return {"game_over": True}
 
-    if st.session_state.game and not st.session_state.game_over:
-        with game_container:
-            # 显示游戏状态
-            cols = st.columns(4)
-            for i in range(4):
-                with cols[i]:
-                    player = st.session_state.game.players[i]
-                    st.subheader(f"玩家 {i + 1}")
-                    st.write(f"剩余牌数: {len(player.hand)}")
-                    if i == st.session_state.game.user_player:
-                        st.write("👤 你")
-                    if i in st.session_state.game.ranking:
-                        st.success(f"排名: {st.session_state.game.ranking.index(i) + 1}")
+        if self.current_player == self.user_player:
+            return {"waiting_for_user": True}
 
-            # 显示当前出牌
-            if st.session_state.game.last_play:
-                st.subheader("场上最新出牌")
-                st.code(" ".join(st.session_state.game.last_play))
+        # 处理 AI 或其他自动玩家的出牌
+        self.play_turn()
+        self.maybe_reset_turn()
 
-            # 游戏日志（限制显示数量）
-            st.subheader("游戏日志")
-            log_display = st.empty()
-            log_text = "\n".join(st.session_state.game_log[-10:])
-            log_display.text_area("日志", value=log_text, height=150, disabled=True)
+        # 如果刚好出完最后一张牌并结束
+        if self.is_game_over:
+            return {"game_over": True}
 
-            # 玩家回合处理
-            if st.session_state.game.current_player == st.session_state.game.user_player:
-                st.session_state.game.user_play(st.session_state.game.players[st.session_state.game.user_player])
-            else:
-                if st.button("AI自动出牌"):
-                    st.session_state.auto_play = True
+        # 如果下一个轮到用户，告诉前端等待
+        if self.current_player == self.user_player:
+            return {"waiting_for_user": True}
 
-                if st.session_state.auto_play:
-                    st.session_state.game.play_turn()
-                    if st.session_state.game.is_game_over:
-                        st.session_state.game_over = True
-                        st.rerun()
-                    else:
-                        time.sleep(0.5)
-                        st.rerun()
+        # 否则仍轮到 AI，下次前端可继续调用 step
+        return {"next_step_needed": True}
 
-    elif st.session_state.game_over:
-        with game_container:
-            st.balloons()
-            st.success("游戏结束！")
-            ranks = ["头游", "二游", "三游", "末游"]
-            for i, player in enumerate(st.session_state.game.ranking):
-                st.write(f"{ranks[i]}：玩家 {player + 1}")
+    def get_player_statuses(self):
+        """
+        返回每位玩家的状态，用于前端显示：
+        [
+            {'id': 1, 'hand_size': 15, 'last_play': ['红桃3', '黑桃3']},
+            ...
+        ]
+        """
+        result = []
+        for i, player in enumerate(self.players):
+            result.append({
+                "id": i + 1,
+                "hand_size": len(player.hand),
+                "last_play": player.last_played_cards
+            })
+        return result
 
-            if st.button("重新开始"):
-                st.session_state.game = None
-                st.session_state.game_over = False
-                st.rerun()
+    def get_game_state(self):
+        """获取游戏的完整可视状态字典，供前端展示"""
+        return {
+            "user_hand": self.players[self.user_player].hand,
+            "last_play": self.last_play,
+            "current_player": self.current_player,
+            "history": self.history,
+            "ai_suggestions": self.get_ai_suggestions(),
+            "ranking": self.ranking,
+            "is_game_over": self.is_game_over,
+            "level_rank": self.active_level,
+            "recent_actions": self.recent_actions
+        }
 
-    else:
-        st.info("请点击侧边栏的开始游戏按钮开始新游戏")
 
 if __name__ == "__main__":
-    main()
+
+    game = GuandanGame(user_player=1, active_level=None, verbose=True, print_history=True)
+    game.play_game()
+

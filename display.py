@@ -420,68 +420,7 @@ class GuandanGame:
             self.current_player = (self.current_player + 1) % 4
             return self.check_game_over()
 
-        # --- Get AI Suggestions ---
-        state = self._get_obs()
-        state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
-        mask = torch.tensor(self.get_valid_action_mask(player.hand, M, self.active_level, self.last_play)).unsqueeze(0)
-
-        # Ensure the actor model is accessible, e.g., self.actor if it's part of the class
-        # Or just 'actor' if it's loaded globally as in your original file example
-        global actor  # Assuming actor is loaded globally
-        with torch.no_grad():  # Disable gradient calculation for inference
-            # Note: The actor output 'probs' is already after a softmax over ALL actions
-            all_probs = actor(state_tensor, mask)  #
-
-        # Get top 3 suggestions (indices and their original probabilities)
-        # We use the original probabilities from the full softmax to find the top K
-        top_k_orig_probs, top_k_indices = torch.topk(all_probs, k=3, dim=-1)
-
-        # --- Apply Softmax to ONLY the top K probabilities for relative comparison ---
-        # Detach is good practice here although not strictly necessary with no_grad()
-        # We only apply softmax if there are positive probabilities to normalize
-        valid_top_k_probs = top_k_orig_probs[top_k_orig_probs > 0]  # Filter out zero probabilities if any
-        if valid_top_k_probs.numel() > 0:
-            # Apply softmax to the non-zero probabilities of the top k actions
-            normalized_top_k_probs_tensor = F.softmax(valid_top_k_probs, dim=-1)
-            # Create a placeholder for normalized probabilities matching top_k_indices size
-            normalized_top_k_probs = torch.zeros_like(top_k_orig_probs)
-            # Fill in the normalized probabilities where the original probs were positive
-            normalized_top_k_probs[top_k_orig_probs > 0] = normalized_top_k_probs_tensor
-        else:
-            # Handle case where all top k probabilities are zero (e.g., mask filtered everything)
-            normalized_top_k_probs = torch.zeros_like(top_k_orig_probs)
-
-        print("\n--- AI 建议 ---")
-        for i in range(top_k_indices.size(1)):
-            action_id = top_k_indices[0, i].item()
-            # Use the normalized probability for display
-            normalized_prob = normalized_top_k_probs[0, i].item()
-
-            # We still check original probability > 0 to decide if it was a valid move initially
-            if top_k_orig_probs[0, i].item() > 0:
-                action_struct = M_id_dict.get(action_id)
-                if action_struct:
-                    # Try to generate a readable description (you might need a better way)
-                    action_desc = action_struct.get('name', action_struct.get('type', f'动作ID {action_id}'))
-                    # Include points if available for clarity
-                    points_str = ""
-                    if 'points' in action_struct and action_struct['points']:
-                        # Convert logic points back to ranks roughly if needed, or just show points
-                        points_str = f" (点数: {action_struct['points']})"
-                    # Handle Pass action specifically
-                    if action_struct.get('type') == 'None':
-                        action_desc = "Pass (不出)"
-                        points_str = ""
-
-                    # Display the normalized probability
-                    print(f"建议 {i + 1}: {action_desc}{points_str} - 相对概率: {normalized_prob:.2%}")
-                else:
-                    print(f"建议 {i + 1}: 未知动作 ID {action_id} - 相对概率: {normalized_prob:.2%}")
-            else:
-                # If original probability was 0, it wasn't a valid move
-                print(f"建议 {i + 1}: (无有效动作)")
-
-        print("-----------------------------")
+        self.get_ai_suggestions(player)
         while True:
             self.show_user_hand()  # 显示手牌
             choice = input("\n请选择要出的牌（用空格分隔），或直接回车跳过（PASS）： ").strip()
@@ -547,83 +486,69 @@ class GuandanGame:
 
         return self.check_game_over()
 
-    def get_ai_suggestions(self):
-        """
-        Generates top 3 AI move suggestions for the current player (intended for user player).
-        Returns a list of formatted strings describing the suggestions.
-        """
-        if self.current_player != self.user_player:
-            return ["AI suggestions only available on your turn."]
+    def get_ai_suggestions(self,player):
+        # --- Get AI Suggestions ---
+        state = self._get_obs()
+        state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
+        mask = torch.tensor(self.get_valid_action_mask(player.hand, M, self.active_level, self.last_play)).unsqueeze(0)
 
-        player = self.players[self.current_player]
-        suggestions = []
+        # Ensure the actor model is accessible, e.g., self.actor if it's part of the class
+        # Or just 'actor' if it's loaded globally as in your original file example
+        global actor  # Assuming actor is loaded globally
+        with torch.no_grad():  # Disable gradient calculation for inference
+            # Note: The actor output 'probs' is already after a softmax over ALL actions
+            all_probs = actor(state_tensor, mask)  #
 
-        try:
-            state = self._get_obs()
-            state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
-            mask = torch.tensor(
-                self.get_valid_action_mask(player.hand, M, self.active_level, self.last_play)).unsqueeze(0)
+        # Get top 3 suggestions (indices and their original probabilities)
+        # We use the original probabilities from the full softmax to find the top K
+        top_k_orig_probs, top_k_indices = torch.topk(all_probs, k=3, dim=-1)
 
-            global actor  # Assuming actor is loaded globally
-            with torch.no_grad():
-                all_probs = actor(state_tensor, mask)
+        # --- Apply Softmax to ONLY the top K probabilities for relative comparison ---
+        # Detach is good practice here although not strictly necessary with no_grad()
+        # We only apply softmax if there are positive probabilities to normalize
+        valid_top_k_probs = top_k_orig_probs[top_k_orig_probs > 0]  # Filter out zero probabilities if any
+        if valid_top_k_probs.numel() > 0:
+            # Apply softmax to the non-zero probabilities of the top k actions
+            normalized_top_k_probs_tensor = F.softmax(valid_top_k_probs, dim=-1)
+            # Create a placeholder for normalized probabilities matching top_k_indices size
+            normalized_top_k_probs = torch.zeros_like(top_k_orig_probs)
+            # Fill in the normalized probabilities where the original probs were positive
+            normalized_top_k_probs[top_k_orig_probs > 0] = normalized_top_k_probs_tensor
+        else:
+            # Handle case where all top k probabilities are zero (e.g., mask filtered everything)
+            normalized_top_k_probs = torch.zeros_like(top_k_orig_probs)
 
-            top_k_orig_probs, top_k_indices = torch.topk(all_probs, k=3, dim=-1)
+        print("\n--- AI 建议 ---")
+        for i in range(top_k_indices.size(1)):
+            action_id = top_k_indices[0, i].item()
+            # Use the normalized probability for display
+            normalized_prob = normalized_top_k_probs[0, i].item()
 
-            # Apply Softmax to ONLY the top K probabilities for relative comparison
-            valid_top_k_probs = top_k_orig_probs[top_k_orig_probs > 0]
-            if valid_top_k_probs.numel() > 0:
-                normalized_top_k_probs_tensor = F.softmax(valid_top_k_probs, dim=-1)
-                normalized_top_k_probs = torch.zeros_like(top_k_orig_probs)
-                normalized_top_k_probs[top_k_orig_probs > 0] = normalized_top_k_probs_tensor
-            else:
-                normalized_top_k_probs = torch.zeros_like(top_k_orig_probs)
-
-            for i in range(top_k_indices.size(1)):
-                action_id = top_k_indices[0, i].item()
-                normalized_prob = normalized_top_k_probs[0, i].item()
-
-                if top_k_orig_probs[0, i].item() > 0:  # Check if it was a valid move initially
-                    action_struct = M_id_dict.get(action_id)
-                    if action_struct:
-                        action_desc = action_struct.get('name', action_struct.get('type', f'动作ID {action_id}'))
+            # We still check original probability > 0 to decide if it was a valid move initially
+            if top_k_orig_probs[0, i].item() > 0:
+                action_struct = M_id_dict.get(action_id)
+                if action_struct:
+                    # Try to generate a readable description (you might need a better way)
+                    action_desc = action_struct.get('name', action_struct.get('type', f'动作ID {action_id}'))
+                    # Include points if available for clarity
+                    points_str = ""
+                    if 'points' in action_struct and action_struct['points']:
+                        # Convert logic points back to ranks roughly if needed, or just show points
+                        points_str = f" (点数: {action_struct['points']})"
+                    # Handle Pass action specifically
+                    if action_struct.get('type') == 'None':
+                        action_desc = "Pass (不出)"
                         points_str = ""
-                        if 'points' in action_struct and action_struct['points']:
-                            points_str = f" (点数: {action_struct['points']})"
-                        if action_struct.get('type') == 'None':
-                            action_desc = "Pass (不出)"
-                            points_str = ""
-                        suggestions.append(f"建议 {i + 1}: {action_desc}{points_str} - 相对概率: {normalized_prob:.2%}")
-                    else:
-                        suggestions.append(f"建议 {i + 1}: 未知动作 ID {action_id} - 相对概率: {normalized_prob:.2%}")
+
+                    # Display the normalized probability
+                    print(f"建议 {i + 1}: {action_desc}{points_str} - 相对概率: {normalized_prob:.2%}")
                 else:
-                    suggestions.append(f"建议 {i + 1}: (无有效动作)")
+                    print(f"建议 {i + 1}: 未知动作 ID {action_id} - 相对概率: {normalized_prob:.2%}")
+            else:
+                # If original probability was 0, it wasn't a valid move
+                print(f"建议 {i + 1}: (无有效动作)")
 
-        except Exception as e:
-            suggestions.append(f"Error getting suggestions: {e}")
-
-        # Ensure "Pass" suggestion is included if applicable
-        can_pass = not self.is_free_turn
-        pass_in_suggestions = any("Pass" in s for s in suggestions)
-        if can_pass and not pass_in_suggestions:
-            # Check if Pass action exists and is valid according to the mask
-            pass_action_id = -1
-            for action_id, action_struct in M_id_dict.items():
-                if action_struct.get('type') == 'None':
-                    pass_action_id = action_id
-                    break
-            if pass_action_id != -1 and mask[0, pass_action_id].item() > 0:
-                # If pass is valid but not in top-k, add it manually (or adjust top-k logic)
-                # For simplicity, just noting it might be missing from top 3
-                pass  # Or potentially add: suggestions.append("建议: Pass (不出) - [概率未在Top3]")
-            elif not can_pass:
-                # Remove pass suggestion if it's a free turn
-                suggestions = [s for s in suggestions if "Pass" not in s]
-
-        if not suggestions:
-            suggestions.append("无可用建议。")
-
-        return suggestions
+        print("-----------------------------")
 
     def check_game_over(self):
         """检查游戏是否结束"""
