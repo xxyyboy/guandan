@@ -39,7 +39,7 @@ class ActorNet(nn.Module):
             logits = logits + (mask - 1) * 1e9
         return F.softmax(logits, dim=-1)
 actor = ActorNet()
-actor.load_state_dict(torch.load("models/actor_ep200.pth"))
+actor.load_state_dict(torch.load("models/actor_ep400.pth"))
 actor.eval()
 class Player:
     def __init__(self, hand):
@@ -76,7 +76,7 @@ class GuandanGame:
         self.winning_team = 0
         self.is_game_over = False
         self.upgrade_amount = 0
-        self.test=False
+        self.test=test
 
         # **手牌排序**
         for player in self.players:
@@ -722,14 +722,7 @@ class GuandanGame:
         """
         return [1, 0, 0]  # 目前默认"不能辅助"，后续可修改逻辑
 
-
-
-if __name__ == "__main__":
-
-    game = GuandanGame(user_player=1, active_level=None, verbose=True, print_history=True)
-    game.play_game()
-    '''
-
+def test():
     win = 0
     first = 0
     yi = 0
@@ -755,7 +748,13 @@ if __name__ == "__main__":
           '一三名',er/win*100,'%','\n',
           '一四名',san/win*100,'%','\n',
           '第一手出完：',first/n*100,'%')
-    '''
+
+
+if __name__ == "__main__":
+
+    game = GuandanGame(user_player=1, active_level=None, verbose=True, print_history=True)
+    game.play_game()
+
 
 
 

@@ -208,6 +208,7 @@ def run_training(episodes=1000):
                     reward = 0
                 else:
                     reward = float(len(entry['points'])*(1/entry['logic_point']))
+                    if 120 <= action_id <= 364 : reward += reward
 
                 memory.append({"state": state, "action_id": action_id, "reward": reward})
                 player.last_played_cards = game.recent_actions[game.current_player]
@@ -225,11 +226,11 @@ def run_training(episodes=1000):
             for i, s in enumerate(memory):
                 s["reward"] += gamma ** (len(memory) - i - 1) * final_reward
             al,cl = train_on_batch(memory)
-            if (ep + 1) % 10 == 0:  # 每 10 局输出一次 loss
+            if (ep + 1) % 50 == 0:
                 print(f"Episode {ep + 1}, action_loss: {al:.4f},critic_loss: {cl:.4f}")
 
 
-        if (ep + 1) % 100 == 0:
+        if (ep + 1) % 200 == 0:
             torch.save(actor.state_dict(), f"models/actor_ep{ep + 1}.pth")
             torch.save(critic.state_dict(), f"models/critic_ep{ep + 1}.pth")
 
