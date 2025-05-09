@@ -177,6 +177,7 @@ with main_col:
                         use_container_width=True
                 ):
                     step_result = game.step()
+                    st.session_state.selected_indices = []
                     st.rerun()
         else:
             if not game.is_game_over:
