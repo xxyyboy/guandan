@@ -176,7 +176,7 @@ with history_col:
         </a>
         """
         st.markdown(github_html, unsafe_allow_html=True)
-        st.markdown('![Static Badge](https://img.shields.io/badge/ver.-1.0.0(Beta)-orange)')
+        st.markdown('![Static Badge](https://img.shields.io/badge/ver.-1.0.3-snow)')
     # 显示级牌
     st.markdown(f"""
     <div style="display: flex; gap: 20px; align-items: center; margin-bottom: 15px;">

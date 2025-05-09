@@ -164,6 +164,7 @@ def run_training(episodes=1000):
                 state = game._get_obs()
                 state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
                 mask = torch.tensor(game.get_valid_action_mask(player.hand, M, game.active_level,game.last_play)).unsqueeze(0)
+                mask1 = mask.squeeze(0)
                 probs = actor(state_tensor, mask)
                 action_id = torch.multinomial(probs, 1).item()
                 action_struct = M_id_dict[action_id]
@@ -203,12 +204,24 @@ def run_training(episodes=1000):
                     game.recent_actions[game.current_player] = ['Pass']  # 记录 Pass
 
 
+                # 从id找到JSON出牌结构
                 entry = find_entry_by_id(M,action_id)
-                if action_id ==0 :
+                if action_id ==0 :# pass无奖励
                     reward = 0
-                else:
+                else:# 对高级出牌奖励修正（*2）
                     reward = float(len(entry['points'])*(1/entry['logic_point']))
                     if 120 <= action_id <= 364 : reward += reward
+                # 拆炸弹、连对惩罚
+                mask2 = torch.tensor(game.get_valid_action_mask(player.hand, M, game.active_level, game.last_play)).squeeze(0)
+                if 0 < action_id <= 48:# 出单牌、对子、三张
+                    for i in range(49,120):
+                        if mask1[i] and not mask2[i]:# 拆了炸
+                            reward -= 2
+                            break
+                    for i in range(330,375):
+                        if mask1[i] and not mask2[i]:# 拆了顺子、连对
+                            reward -= 2
+                            break
 
                 memory.append({"state": state, "action_id": action_id, "reward": reward})
                 player.last_played_cards = game.recent_actions[game.current_player]
@@ -226,7 +239,7 @@ def run_training(episodes=1000):
             for i, s in enumerate(memory):
                 s["reward"] += gamma ** (len(memory) - i - 1) * final_reward
             al,cl = train_on_batch(memory)
-            if (ep + 1) % 50 == 0:
+            if (ep + 1) % 20 == 0:
                 print(f"Episode {ep + 1}, action_loss: {al:.4f},critic_loss: {cl:.4f}")
 
 
