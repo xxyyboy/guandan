@@ -86,7 +86,9 @@ def load_latest_models(actor, critic, model_dir="models"):
 initial_ep = load_latest_models(actor, critic)
 
 # 训练函数
-def train_on_batch(batch, gamma=0.99, device="cpu"):
+def train_on_batch(batch, gamma=0.99, device= None):
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
     # 将数据组织为 tensor
     states = torch.tensor(np.array([s["state"] for s in batch]), dtype=torch.float32).to(device)
     actions = torch.tensor(np.array([s["action_id"] for s in batch]), dtype=torch.long).to(device)
