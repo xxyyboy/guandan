@@ -38,9 +38,13 @@ class ActorNet(nn.Module):
         if mask is not None:
             logits = logits + (mask - 1) * 1e9
         return F.softmax(logits, dim=-1)
-actor = ActorNet()
-actor.load_state_dict(torch.load("models/show2.pth"))
-actor.eval()
+
+def load_actor_model(path):
+    model = ActorNet()
+    model.load_state_dict(torch.load(path, map_location='cpu'))
+    model.eval()
+    return model
+
 class Player:
     def __init__(self, hand):
         """
@@ -52,7 +56,7 @@ class Player:
 
 
 class GuandanGame:
-    def __init__(self, user_player=None, active_level=None, verbose=True, print_history=False,test=False):
+    def __init__(self, user_player=None, active_level=None, verbose=True, print_history=False,test=False, model_path="models/show2.pth"):
         # **两队各自的级牌**
         self.print_history = print_history
         self.active_level = active_level if active_level else random.choice(range(2, 15))
@@ -77,6 +81,7 @@ class GuandanGame:
         self.is_game_over = False
         self.upgrade_amount = 0
         self.test=False
+        self.actor = load_actor_model(model_path)
 
         # **手牌排序**
         for player in self.players:
@@ -372,7 +377,7 @@ class GuandanGame:
         state = self._get_obs()
         state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
         mask = torch.tensor(self.get_valid_action_mask(player.hand, M, self.active_level, self.last_play)).unsqueeze(0)
-        probs = actor(state_tensor, mask)
+        probs = self.actor(state_tensor, mask)
         action_id = torch.multinomial(probs, 1).item()
         action_struct = M_id_dict[action_id]
         # 2. 枚举所有合法出牌组合（带花色）
@@ -493,9 +498,8 @@ class GuandanGame:
         state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
         mask = torch.tensor(self.get_valid_action_mask(player.hand, M, self.active_level, self.last_play)).unsqueeze(0)
 
-        global actor
         with torch.no_grad():
-            all_probs = actor(state_tensor, mask)
+            all_probs = self.actor(state_tensor, mask)
 
         top_k_orig_probs, top_k_indices = torch.topk(all_probs, k=3, dim=-1)
 

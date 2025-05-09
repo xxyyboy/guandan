@@ -56,8 +56,9 @@ class CriticNet(nn.Module):
 
 
 # 初始化模型
-actor = ActorNet()
-critic= CriticNet()
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+actor = ActorNet().to(device)
+critic = CriticNet().to(device)
 actor_optimizer = optim.Adam(actor.parameters(), lr=1e-4)
 critic_optimizer = optim.Adam(critic.parameters(), lr=1e-4)
 gamma=0.9
@@ -164,8 +165,8 @@ def run_training(episodes=1000):
             if game.current_player == 0:
                 # 1. 模型推理
                 state = game._get_obs()
-                state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
-                mask = torch.tensor(game.get_valid_action_mask(player.hand, M, game.active_level,game.last_play)).unsqueeze(0)
+                state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(device)
+                mask = torch.tensor(game.get_valid_action_mask(player.hand, M, game.active_level,game.last_play)).unsqueeze(0).to(device)
                 mask1 = mask.squeeze(0)
                 probs = actor(state_tensor, mask)
                 action_id = torch.multinomial(probs, 1).item()
@@ -214,7 +215,7 @@ def run_training(episodes=1000):
                     reward = float(len(entry['points'])*(1/entry['logic_point']))
                     if 120 <= action_id <= 364 : reward += reward
                 # 拆炸弹、连对惩罚
-                mask2 = torch.tensor(game.get_valid_action_mask(player.hand, M, game.active_level, game.last_play)).squeeze(0)
+                mask2 = torch.tensor(game.get_valid_action_mask(player.hand, M, game.active_level, game.last_play)).squeeze(0).to(device)
                 if 0 < action_id <= 48:# 出单牌、对子、三张
                     for i in range(49,120):
                         if mask1[i] and not mask2[i]:# 拆了炸

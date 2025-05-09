@@ -1,5 +1,3 @@
-import numpy as np
-from get_actions import enumerate_colorful_actions, CARD_RANKS, SUITS,encode_hand_108
 import random
 from collections import Counter, defaultdict
 
@@ -13,7 +11,6 @@ except ImportError:
     from give_cards import create_deck, shuffle_deck, deal_cards
 import torch
 import torch.nn as nn
-import torch.optim as optim
 import torch.nn.functional as F
 import json
 with open("doudizhu_actions.json", "r", encoding="utf-8") as f:
@@ -39,7 +36,7 @@ class ActorNet(nn.Module):
             logits = logits + (mask - 1) * 1e9
         return F.softmax(logits, dim=-1)
 actor = ActorNet()
-actor.load_state_dict(torch.load("models/actor_ep400.pth"))
+actor.load_state_dict(torch.load("models/actor_ep600.pth"))
 actor.eval()
 class Player:
     def __init__(self, hand):
@@ -728,7 +725,7 @@ def test():
     yi = 0
     er = 0
     san = 0
-    n=100
+    n=500
     for _ in range(n):
         game = GuandanGame(user_player=None,active_level=None,verbose=False,print_history=True,test=True)
         game.play_game()
