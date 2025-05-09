@@ -750,6 +750,8 @@ class GuandanGame:
             return {"game_over": True}
 
         if self.current_player == self.user_player:
+            self.actor_play(self.players[self.user_player])
+            self.maybe_reset_turn()
             return {"waiting_for_user": True}
 
         # 处理 AI 或其他自动玩家的出牌

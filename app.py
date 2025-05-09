@@ -57,95 +57,102 @@ with main_col:
 
     # 玩家行动
     if not game.is_game_over and game.current_player == game.user_player:
-        st.markdown(f"****🕹️ 出牌****")
+        if game.user_player not in game.ranking:
+            st.markdown(f"****🕹️ 出牌****")
 
-        # 初始化用户已选牌
-        if "selected_indices" not in st.session_state:
-            st.session_state.selected_indices = []
+            # 初始化用户已选牌
+            if "selected_indices" not in st.session_state:
+                st.session_state.selected_indices = []
 
-        # 显示手牌按钮
-        hand_cols = st.columns(min(10, len(user_hand)),gap='small')  # 每行最多8张牌
-        for idx, card in enumerate(user_hand):
-            col = hand_cols[idx % len(hand_cols)]
-            with col:
-                # 判断当前索引是否在选中列表中
-                is_selected = idx in st.session_state.selected_indices
-                if st.button(
-                        f"{card}" if is_selected else card,
-                        key=f"card_btn_{idx}",
-                        type="primary" if is_selected else "secondary",
-                        use_container_width=True
-                ):
-                    if is_selected:
-                        # 通过索引精准移除（避免重复牌问题）
-                        st.session_state.selected_indices.remove(idx)
-                    else:
-                        st.session_state.selected_indices.append(idx)
-                    st.rerun()
+            # 显示手牌按钮
+            hand_cols = st.columns(min(10, len(user_hand)),gap='small')  # 每行最多8张牌
+            for idx, card in enumerate(user_hand):
+                col = hand_cols[idx % len(hand_cols)]
+                with col:
+                    # 判断当前索引是否在选中列表中
+                    is_selected = idx in st.session_state.selected_indices
+                    if st.button(
+                            f"{card}" if is_selected else card,
+                            key=f"card_btn_{idx}",
+                            type="primary" if is_selected else "secondary",
+                            use_container_width=True
+                    ):
+                        if is_selected:
+                            # 通过索引精准移除（避免重复牌问题）
+                            st.session_state.selected_indices.remove(idx)
+                        else:
+                            st.session_state.selected_indices.append(idx)
+                        st.rerun()
 
-        # 从索引转换实际牌面显示
-        selected_cards = [user_hand[i] for i in sorted(st.session_state.selected_indices)]
+            # 从索引转换实际牌面显示
+            selected_cards = [user_hand[i] for i in sorted(st.session_state.selected_indices)]
 
-        # 显示已选牌
-        if selected_cards:
-            st.markdown(
-                f"""<div style='border:1px solid #e6e6e6; padding:10px; border-radius:5px; 
-                background-color:#f9f9f9; margin-bottom:15px;'>
-                <strong>已选择：</strong> <span style='color:#2e7d32; font-weight:bold'>
-                {'、'.join(selected_cards)}</span></div>""",
-                unsafe_allow_html=True
-            )
-        else:
-            if game.is_free_turn:
+            # 显示已选牌
+            if selected_cards:
                 st.markdown(
                     f"""<div style='border:1px solid #e6e6e6; padding:10px; border-radius:5px; 
                     background-color:#f9f9f9; margin-bottom:15px;'>
-                    <strong>已选择：</strong> <span style='color:gray; font-weight:bold'>
-                    {'自由回合'}</span></div>""",
-                    unsafe_allow_html=True)
+                    <strong>已选择：</strong> <span style='color:#2e7d32; font-weight:bold'>
+                    {'、'.join(selected_cards)}</span></div>""",
+                    unsafe_allow_html=True
+                )
             else:
-                st.markdown(
-                    f"""<div style='border:1px solid #e6e6e6; padding:10px; border-radius:5px; 
-                                    background-color:#f9f9f9; margin-bottom:15px;'>
-                                    <strong>已选择：</strong> <span style='color:gray; font-weight:bold'>
-                                    {'尚未选择任何牌'}</span></div>""",
-                    unsafe_allow_html=True)
+                if game.is_free_turn:
+                    st.markdown(
+                        f"""<div style='border:1px solid #e6e6e6; padding:10px; border-radius:5px; 
+                        background-color:#f9f9f9; margin-bottom:15px;'>
+                        <strong>已选择：</strong> <span style='color:gray; font-weight:bold'>
+                        {'自由回合'}</span></div>""",
+                        unsafe_allow_html=True)
+                else:
+                    st.markdown(
+                        f"""<div style='border:1px solid #e6e6e6; padding:10px; border-radius:5px; 
+                                        background-color:#f9f9f9; margin-bottom:15px;'>
+                                        <strong>已选择：</strong> <span style='color:gray; font-weight:bold'>
+                                        {'尚未选择任何牌'}</span></div>""",
+                        unsafe_allow_html=True)
 
-        # 操作按钮组
-        btn_col1, btn_col2,btn_col3 = st.columns([1,1,1])
-        with btn_col1:
-            if st.button("清空选择", use_container_width=True):
-                st.session_state.selected_indices = []
+            # 操作按钮组
+            btn_col1, btn_col2,btn_col3 = st.columns([1,1,1])
+            with btn_col1:
+                if st.button("清空选择", use_container_width=True):
+                    st.session_state.selected_indices = []
+                    st.rerun()
+            with btn_col2:
+                if st.button(
+                        "PASS",
+                        use_container_width=True,
+                        disabled=game.is_free_turn
+                ):
+                    # 通过索引获取实际牌组
+                    move = []
+                    result = game.submit_user_move(move)
+                    if "error" in result:
+                        st.error(result["error"])
+                    else:
+                        st.session_state.selected_indices = []  # 清空选择
+                        st.rerun()
+            with btn_col3:
+                if st.button(
+                        "确认出牌",
+                        type="primary",
+                        use_container_width=True
+                ):
+                    # 通过索引获取实际牌组
+                    move = [user_hand[i] for i in st.session_state.selected_indices]
+                    result = game.submit_user_move(move)
+                    if "error" in result:
+                        st.error(result["error"])
+                    else:
+                        st.session_state.selected_indices = []  # 清空选择
+                        st.rerun()
+        else:
+            if not game.is_game_over:
+                while True:
+                    step_result = game.step()
+                    if step_result.get("waiting_for_user") or step_result.get("game_over"):
+                        break
                 st.rerun()
-        with btn_col2:
-            if st.button(
-                    "PASS",
-                    use_container_width=True,
-                    disabled=game.is_free_turn
-            ):
-                # 通过索引获取实际牌组
-                move = []
-                result = game.submit_user_move(move)
-                if "error" in result:
-                    st.error(result["error"])
-                else:
-                    st.session_state.selected_indices = []  # 清空选择
-                    st.rerun()
-        with btn_col3:
-            if st.button(
-                    "确认出牌",
-                    type="primary",
-                    use_container_width=True
-            ):
-                # 通过索引获取实际牌组
-                move = [user_hand[i] for i in st.session_state.selected_indices]
-                result = game.submit_user_move(move)
-                if "error" in result:
-                    st.error(result["error"])
-                else:
-                    st.session_state.selected_indices = []  # 清空选择
-                    st.rerun()
-
     else:
         # 非用户轮次，自动推进
         if not game.is_game_over:

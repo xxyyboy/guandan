@@ -39,7 +39,7 @@ class ActorNet(nn.Module):
             logits = logits + (mask - 1) * 1e9
         return F.softmax(logits, dim=-1)
 actor = ActorNet()
-actor.load_state_dict(torch.load("models/actor_ep200.pth"))
+actor.load_state_dict(torch.load("models/actor_ep400.pth"))
 actor.eval()
 class Player:
     def __init__(self, hand):
@@ -728,7 +728,7 @@ def test():
     yi = 0
     er = 0
     san = 0
-    n=500
+    n=100
     for _ in range(n):
         game = GuandanGame(user_player=None,active_level=None,verbose=False,print_history=True,test=True)
         game.play_game()
