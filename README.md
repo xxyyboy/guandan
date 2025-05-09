@@ -1,7 +1,7 @@
 # guandan
  掼蛋强化学习
 
-![Static Badge](https://img.shields.io/badge/ver.-1.0.1(Beta)-orange)
+![Static Badge](https://img.shields.io/badge/ver.-1.0.2(Beta)-orange)
 ## 2025/4/25
 ### 建立A2C网络，能够训练、预测。
 
