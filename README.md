@@ -1,5 +1,5 @@
-# guandan
- 掼蛋强化学习
+# [guandan](https://guandan.streamlit.app/)
+掼蛋强化学习
 
 ![Static Badge](https://img.shields.io/badge/ver.-1.0.2(Beta)-orange)
 ## 2025/4/25
