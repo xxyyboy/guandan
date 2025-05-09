@@ -4,6 +4,32 @@ import streamlit as st
 from test import GuandanGame
 import random
 
+
+def convert_card_display_html(card_str):
+    SUIT_SYMBOLS = {
+        '黑桃': ('♠', 'black'),
+        '红桃': ('♥', 'red'),
+        '梅花': ('♣', 'black'),
+        '方块': ('♦', 'red')
+    }
+    for cn_suit, (symbol, color) in SUIT_SYMBOLS.items():
+        if card_str.startswith(cn_suit):
+            number_part = card_str[len(cn_suit):]
+            return f"<span style='color:{color}; font-size:24px; font-weight:bold'>{symbol}</span><span style='font-size:20px'> {number_part}</span>"
+    return f"<span style='font-size:20px'>{card_str}</span>"
+
+
+def convert_card_display(card_str):
+    SUIT_SYMBOLS = {'黑桃': '♠️', '红桃': '♥️', '梅花': '♣️', '方块': '♦️'}
+    if card_str in ['大王']:
+        return '大王🃏'
+    if card_str in ['小王']:
+        return '小王🃟'
+    for cn_suit, symbol in SUIT_SYMBOLS.items():
+        if card_str.startswith(cn_suit):
+            return card_str.replace(cn_suit, symbol)
+    return card_str
+
 # 初始化游戏
 if "game" not in st.session_state:
     st.session_state.game = GuandanGame(user_player=1, verbose=False, print_history=False)
@@ -65,20 +91,19 @@ with main_col:
                 st.session_state.selected_indices = []
 
             # 显示手牌按钮
-            hand_cols = st.columns(min(10, len(user_hand)),gap='small')  # 每行最多8张牌
+            hand_cols = st.columns(min(9, len(user_hand)),gap='small')  # 每行最多8张牌
             for idx, card in enumerate(user_hand):
                 col = hand_cols[idx % len(hand_cols)]
                 with col:
-                    # 判断当前索引是否在选中列表中
                     is_selected = idx in st.session_state.selected_indices
+                    card_display = convert_card_display(card)
                     if st.button(
-                            f"{card}" if is_selected else card,
+                            f"{card_display}" if is_selected else card_display,
                             key=f"card_btn_{idx}",
                             type="primary" if is_selected else "secondary",
                             use_container_width=True
                     ):
                         if is_selected:
-                            # 通过索引精准移除（避免重复牌问题）
                             st.session_state.selected_indices.remove(idx)
                         else:
                             st.session_state.selected_indices.append(idx)
@@ -113,14 +138,14 @@ with main_col:
                         unsafe_allow_html=True)
 
             # 操作按钮组
-            btn_col1, btn_col2,btn_col3 = st.columns([1,1,1])
+            btn_col1, btn_col2,btn_col3,btn_col4 = st.columns([1,1,1,1])
             with btn_col1:
-                if st.button("清空选择", use_container_width=True):
+                if st.button("🗑️清空选择", use_container_width=True):
                     st.session_state.selected_indices = []
                     st.rerun()
             with btn_col2:
                 if st.button(
-                        "PASS",
+                        "👟PASS",
                         use_container_width=True,
                         disabled=game.is_free_turn
                 ):
@@ -134,7 +159,7 @@ with main_col:
                         st.rerun()
             with btn_col3:
                 if st.button(
-                        "确认出牌",
+                        "✔️确认出牌",
                         type="primary",
                         use_container_width=True
                 ):
@@ -146,6 +171,13 @@ with main_col:
                     else:
                         st.session_state.selected_indices = []  # 清空选择
                         st.rerun()
+            with btn_col4:
+                if st.button(
+                        "♻️自动",
+                        use_container_width=True
+                ):
+                    step_result = game.step()
+                    st.rerun()
         else:
             if not game.is_game_over:
                 while True:
@@ -183,14 +215,24 @@ with history_col:
         </a>
         """
         st.markdown(github_html, unsafe_allow_html=True)
-        st.markdown('![Static Badge](https://img.shields.io/badge/ver.-1.0.3-snow)')
+        st.markdown('![Static Badge](https://img.shields.io/badge/ver.-1.1.0😎-00FFFA)')
     # 显示级牌
     st.markdown(f"""
-    <div style="display: flex; gap: 20px; align-items: center; margin-bottom: 15px;">
-        <div><strong>当前级牌：</strong><span style="color: red;">{game.active_level}</span></div>
-        <div style="width: 1px; height: 20px; background-color: #ccc;"></div>
-        <div><strong>当前轮到：</strong>玩家 <span style="color: orange;">{game.current_player + 1}</span></div>
-    </div>
+        <div style="display: flex; gap: 20px; align-items: center; margin-bottom: 15px;">
+            <div>
+                <strong>当前级牌：</strong>
+                <span style="background-color: red; color: white; padding: 4px 10px; border-radius: 6px; font-weight: bold; font-size: 20px;">
+                    {game.active_level}
+                </span>
+            </div>
+            <div style="width: 1px; height: 20px; background-color: #ccc;"></div>
+            <div>
+                <strong>当前轮到：</strong>玩家 
+                <span style="color: orange; font-weight: bold; font-size: 16px;">
+                    {game.current_player + 1}
+                </span>
+            </div>
+        </div>
     """, unsafe_allow_html=True)
     # 显示游戏历史
     history_lines = []

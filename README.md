@@ -1,7 +1,7 @@
 # [guandan](https://guandan.streamlit.app/)
 掼蛋强化学习
 
-![Static Badge](https://img.shields.io/badge/ver.-1.0.3-snow)
+![Static Badge](https://img.shields.io/badge/ver.-1.1.0-00FFFA)
 ## 2025/4/25
 ### 建立A2C网络，能够训练、预测。
 
