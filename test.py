@@ -39,7 +39,7 @@ class ActorNet(nn.Module):
             logits = logits + (mask - 1) * 1e9
         return F.softmax(logits, dim=-1)
 actor = ActorNet()
-actor.load_state_dict(torch.load("models/actor_ep600.pth"))
+actor.load_state_dict(torch.load("models/show.pth"))
 actor.eval()
 class Player:
     def __init__(self, hand):
