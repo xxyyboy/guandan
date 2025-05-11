@@ -1,7 +1,7 @@
 import time
 
 import streamlit as st
-from test import GuandanGame
+from test import GuandanGame,M
 import random
 
 
@@ -73,14 +73,41 @@ with main_col:
                 st.markdown(f"手牌: **{status['hand_size']}** 张")
                 st.markdown("出牌：" + " ".join(status['last_play']))
 
-    # 显示 AI 建议
-    sug_html = "<div style='background-color:#e3f2fd; padding:15px; border-radius:8px;'>"
-    sug_html += "<strong>🤖 AI 建议：</strong><br>"
-    for sug in ai_suggestions:
-        sug_html += f"• {sug}<br>"
-    sug_html += "</div>"
-    st.markdown(sug_html, unsafe_allow_html=True)
-
+    sug,mes = st.columns([3,1])
+    with sug:
+        # 显示 AI 建议
+        sug_html = "<div style='background-color:#e3f2fd; padding:15px; border-radius:8px;'>"
+        sug_html += "<strong>🤖 AI 建议：</strong><br>"
+        for sug in ai_suggestions:
+            sug_html += f"• {sug}<br>"
+        sug_html += "</div>"
+        st.markdown(sug_html, unsafe_allow_html=True)
+    with mes:
+        last_play_type = game.map_cards_to_action(game.last_play,M,game.active_level)["type"]
+        st.markdown(
+            f"""
+            <div style='
+                background-color: #DFFBCB;padding: 15px;
+                border-radius: 8px;
+                font-family: Arial, sans-serif;'>
+                <p style='margin-bottom: 8px;'>
+                    <strong>上次出牌玩家：</strong>
+                    <span style='color: #555;'>
+                        {'玩家' + str(int(game.last_player) + 1) if game.last_player > -1 else '无'}
+                    </span>
+                </p>
+                <p style='margin-bottom: 0;'>
+                    <strong>上次出牌：</strong>{last_play_type}<br>
+                    <span style='
+                        display: inline-block;background-color: #f8f9fa;
+                        padding: 4px;border-radius: 6px;
+                        margin-top: 2px;color: #333;'>
+                        {game.last_play}
+                    </span>
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True)
     # 玩家行动
     if not game.is_game_over and game.current_player == game.user_player:
         if game.user_player not in game.ranking:
@@ -173,7 +200,7 @@ with main_col:
                         st.rerun()
             with btn_col4:
                 if st.button(
-                        "♻️自动",
+                        "🤖自动",
                         use_container_width=True
                 ):
                     step_result = game.step()
@@ -216,7 +243,7 @@ with history_col:
         </a>
         """
         st.markdown(github_html, unsafe_allow_html=True)
-        st.markdown('![Static Badge](https://img.shields.io/badge/ver.-1.1.0😎-00FFFA)')
+        st.markdown('![Static Badge](https://img.shields.io/badge/ver.-1.1.2-00FFFA)')
     # 显示级牌
     st.markdown(f"""
         <div style="display: flex; gap: 20px; align-items: center; margin-bottom: 15px;">
@@ -248,6 +275,5 @@ with history_col:
         <div><span style="color: #000000;">调试区</span></div>
     </div>
     """, unsafe_allow_html=True)
-    st.markdown(f"`is_free_turn:{game.is_free_turn}`,`pass_count:{game.pass_count}`,`jiefeng:{game.jiefeng}`,"
-                f"`last_play:{game.last_play}`,`last_player:{game.last_player}`")
+    st.markdown(f"`is_free_turn:{game.is_free_turn}`,`pass_count:{game.pass_count}`,`jiefeng:{game.jiefeng}`")
 

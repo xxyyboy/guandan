@@ -214,17 +214,13 @@ def run_training(episodes=1000):
                 else:# 对高级出牌奖励修正（*2）
                     reward = float(len(entry['points'])*(1/entry['logic_point']))
                     if 120 <= action_id <= 364 : reward += reward
+                # TODO: 三带中对子的判断
                 # 拆炸弹、连对惩罚
                 mask2 = torch.tensor(game.get_valid_action_mask(player.hand, M, game.active_level, game.last_play)).squeeze(0).to(device)
                 if 0 < action_id <= 48:# 出单牌、对子、三张
-                    for i in range(49,120):
-                        if mask1[i] and not mask2[i]:# 拆了炸
-                            reward -= 2
-                            break
-                    for i in range(330,375):
-                        if mask1[i] and not mask2[i]:# 拆了顺子、连对
-                            reward -= 2
-                            break
+                    if (any(mask1[i] and not mask2[i] for i in range(49, 120)) or
+                            any(mask1[i] and not mask2[i] for i in range(330, 375))):# 拆了炸、顺子、连对
+                        reward -= 1
 
                 memory.append({"state": state, "action_id": action_id, "reward": reward})
                 player.last_played_cards = game.recent_actions[game.current_player]

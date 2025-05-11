@@ -1,6 +1,7 @@
 import random
+import numpy as np
 from collections import Counter, defaultdict
-
+from get_actions import enumerate_colorful_actions, CARD_RANKS, SUITS,encode_hand_108
 try:
     from c_rule import Rules  # 导入 Cython 版本
 except ImportError:

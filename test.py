@@ -54,7 +54,7 @@ class Player:
         self.played_cards = []  # 记录已出的牌
         self.last_played_cards = []
 
-
+# TODO: 添加选座位接口
 class GuandanGame:
     def __init__(self, user_player=None, active_level=None, verbose=True, print_history=False,test=False, model_path="models/show2.pth"):
         # **两队各自的级牌**
@@ -80,8 +80,9 @@ class GuandanGame:
         self.winning_team = 0
         self.is_game_over = False
         self.upgrade_amount = 0
-        self.test=False
-        self.actor = load_actor_model(model_path)
+        self.test=test
+        self.model_path = model_path
+        self.actor = load_actor_model(self.model_path)
 
         # **手牌排序**
         for player in self.players:
@@ -141,7 +142,7 @@ class GuandanGame:
         return None
 
     def maybe_reset_turn(self):
-        # **计算当前仍有手牌的玩家数**
+        """计算当前仍有手牌的玩家数、处理接风等复杂逻辑"""
         active_players = 4 - len(self.ranking)
         # **如果 Pass 的人 == "当前有手牌的玩家数 - 1"，就重置轮次**
         if self.pass_count >= (active_players - 1) and self.current_player not in self.ranking:
@@ -173,7 +174,7 @@ class GuandanGame:
     def play_turn(self):
         """执行当前玩家的回合"""
         player = self.players[self.current_player]  # 获取当前玩家对象
-
+        # TODO: 添加选座位接口
         if self.user_player == self.current_player:
             result = self.user_play(player)
         else:
@@ -597,7 +598,7 @@ class GuandanGame:
         print("\n你的手牌：", " ".join(sorted_hand))
         if self.last_play:
             print(f"场上最新出牌：{' '.join(self.last_play)}\n")
-
+    # DONE: 检查不同座位能否正常工作
     def _get_obs(self):
         """
         构造状态向量，总共 3049 维
