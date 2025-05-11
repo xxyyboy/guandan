@@ -55,6 +55,7 @@ class Player:
         self.last_played_cards = []
 
 # TODO: 添加选座位接口
+# TODO: 检查 方块9 方块A 梅花K 黑桃Q 梅花J
 class GuandanGame:
     def __init__(self, user_player=None, active_level=None, verbose=True, print_history=False,test=False, model_path="models/show2.pth"):
         # **两队各自的级牌**
