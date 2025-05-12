@@ -1,4 +1,5 @@
 import time
+from gc import enable
 
 import streamlit as st
 from test import GuandanGame,M
@@ -53,7 +54,8 @@ if st.session_state.page == "setup":
         st.session_state.page = "main"
         st.rerun()
 
-    if st.button("联机"):
+    if st.button("联机大厅",
+                 disabled=True):
         st.session_state.page = "multi_setup"
         st.rerun()
 
