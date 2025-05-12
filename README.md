@@ -1,23 +1,26 @@
-# [guandan](https://guandan.streamlit.app/)
-掼蛋强化学习
+# [掼蛋强化学习](https://guandan.streamlit.app/)
 
-![Static Badge](https://img.shields.io/badge/ver.-1.2.0-00FFFA)
+![Static Badge](https://img.shields.io/badge/ver.-1.2.1-E85889)
+![GitHub](https://img.shields.io/github/license/746505972/guandan?logo=github)
+<div style="margin-top: 6px; background: #f1f1f1; padding: 1px;
+            border-radius: 6px; color: #333; font-size: 14px;">
+</div>
 ## 2025/4/25
 ### 建立A2C网络，能够训练、预测。
 
-`ActorNet` 输出结构动作 `action_id` 的概率分布（考虑了 mask）；
+- `ActorNet` 输出结构动作 `action_id` 的概率分布（考虑了 mask）；
 
-`CriticNet` 输出当前 `state` 的 `value` 估计；
+- `CriticNet` 输出当前 `state` 的 `value` 估计；
 
 ### 奖励函数
-
+```
 r=reward + gamma ** (len(memory) - i - 1) * final_reward
+```
+- `reward`为即时奖励，值为出牌长度*牌型的`logic_point`
 
-`reward`为即时奖励，值为出牌长度*牌型的`logic_point`
+- `final_reward`为整局奖励，队伍获胜为正，12名为3，13名为2，14名为1，反之亦然
 
-`final_reward`为整局奖励，队伍获胜为正，12名为3，13名为2，14名为1，反之亦然
-
-`memory`是一局的记录，结构为`[{state,action_id,reward},{state,action_id,reward},...]`
+- `memory`是一局的记录，结构为`[{state,action_id,reward},{state,action_id,reward},...]`
 
 ### 优势函数：
 
@@ -40,12 +43,6 @@ $advantage=r+\gamma*V(state')-V(state)$
 > obs:
 > 
 > [0. 1. 1. 1. 0. 0. 0. 0. 0. 0. 0. 0. 0. 1. 1. 1. 1. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 1. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 1. 0. 1. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 1. 1. 0. 1.]
-## 2025/4/18
-### 强化学习组：
-搭建Actor网络（暂无奖励函数）
-## 2025/4/7
-### 强化学习组：
-![graphviz.png](graphviz.png)
 
 **状态表示**
 
@@ -64,13 +61,4 @@ $advantage=r+\gamma*V(state')-V(state)$
 | 辅助状态      | 3           | 标识是否有意给队友铺路            |
 | 总维度       | `3049`      |                        |
 
-
- ## 2025/3/21
-
-### Agent组：
-
-![e8aa1fcc1e882866969500d8a43f9455_720](https://github.com/user-attachments/assets/52af1fd5-a624-4064-a36f-8939e23751b2)
-
-![a0d43911d79d063d858809f461f2bce6](https://github.com/user-attachments/assets/3189db79-15d6-4187-8e76-a0f7147de099)
-
-
+![graphviz.png](graphviz.png)

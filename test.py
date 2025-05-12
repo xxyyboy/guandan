@@ -521,15 +521,15 @@ class GuandanGame:
                 action_struct = M_id_dict.get(action_id)
                 if action_struct:
                     action_desc = action_struct.get('name', action_struct.get('type', f'动作ID {action_id}'))
-                    points_str = f" (点数: {action_struct['points']})" if action_struct.get('points') else ""
+                    points_str = f"{action_struct['points']}" if action_struct.get('points') else ""
                     if action_struct.get('type') == 'None':
                         action_desc = "Pass (不出)"
                         points_str = ""
-                    suggestions.append(f"建议 {i + 1}: {action_desc}{points_str} - 相对概率: {normalized_prob:.2%}")
+                    suggestions.append(f"建议 {i + 1}: {action_desc}-{points_str} - 相对概率: {normalized_prob:.2%}")
                 else:
                     suggestions.append(f"建议 {i + 1}: 未知动作 ID {action_id} - 相对概率: {normalized_prob:.2%}")
             else:
-                suggestions.append(f"建议 {i + 1}: (无有效动作)")
+                suggestions.append(f"建议 {i + 1}:无有效动作")
 
         while len(suggestions) < 3:
             suggestions.append("建议: 无可用动作")
@@ -672,8 +672,6 @@ class GuandanGame:
         hand_size = len(self.players[self.current_player].hand)
         return -hand_size  # 手牌越少，奖励越高
 
-
-
     def level_card_to_index(self, level_card):
         """
         级牌转换为 one-hot 索引 (2 -> 0, 3 -> 1, ..., A -> 12)
@@ -806,9 +804,7 @@ class GuandanGame:
             "recent_actions": self.recent_actions
         }
 
-
 if __name__ == "__main__":
 
     game = GuandanGame(user_player=1, active_level=None, verbose=True, print_history=True)
     game.play_game()
-

@@ -1,18 +1,15 @@
-import time
-from gc import enable
-
 import streamlit as st
 from test import GuandanGame,M
-import random
 import os
 
 def convert_card_display(card_str):
-    SUIT_SYMBOLS = {'黑桃': '♠️', '红桃': '♥️', '梅花': '♣️', '方块': '♦️'}
+    """修改手牌显示"""
+    suit_symbols = {'黑桃': '♠️', '红桃': '♥️', '梅花': '♣️', '方块': '♦️'}
     if card_str in ['大王']:
         return '大王🃏'
     if card_str in ['小王']:
         return '小王🃟'
-    for cn_suit, symbol in SUIT_SYMBOLS.items():
+    for cn_suit, symbol in suit_symbols.items():
         if card_str.startswith(cn_suit):
             return card_str.replace(cn_suit, symbol)
     return card_str
@@ -74,7 +71,7 @@ elif st.session_state.page == "main":
     main_col, history_col = st.columns([3, 1])
 
 
-    with main_col:
+    with (main_col):
         # 当前状态
         state = game.get_game_state()
         user_hand = state["user_hand"]
@@ -120,7 +117,7 @@ elif st.session_state.page == "main":
 
                 st.markdown(content_html, unsafe_allow_html=True)
 
-        # 建议与上轮出牌类型
+        # AI建议与上轮出牌类型
         last_play_type = game.map_cards_to_action(game.last_play,M,game.active_level)["type"]
         last_play_str = "、".join(game.last_play) if game.last_play else "无"
 
@@ -131,7 +128,8 @@ elif st.session_state.page == "main":
                 <div style="line-height: 1.8;">
         """
         for sug in ai_suggestions:
-            ai_html += f"• {sug}<br>"
+            ai_html += f"""<div style="margin-top: 6px; background: #f8f9fa; padding: 6px 8px; 
+            border-radius: 6px; color: #333; font-size: 14px;">{sug}</div>"""
 
         ai_html += """
                 </div>
@@ -291,7 +289,7 @@ elif st.session_state.page == "main":
             </a>
             """
             st.markdown(github_html, unsafe_allow_html=True)
-            st.markdown('![Static Badge](https://img.shields.io/badge/ver.-1.2.0-00FFFA)')
+            st.markdown('![Static Badge](https://img.shields.io/badge/ver.-1.2.1-E85889)')
         # 显示级牌
         st.markdown(f"""
             <div style="display: flex; gap: 20px; align-items: center; margin-bottom: 15px;">
@@ -319,12 +317,22 @@ elif st.session_state.page == "main":
         history_text = "\n".join(history_lines)
         st.text_area("📝 出牌历史", value=history_text, height=350, disabled=True)
         st.markdown(f"""
-        <div style="display: flex; gap: 0px; align-items: center; margin-bottom: 0px;">
-            <div><span style="color: #000000;">调试区</span></div>
-        </div>
-        """, unsafe_allow_html=True)
-        st.markdown(f"`is_free_turn:{game.is_free_turn}`,`pass_count:{game.pass_count}`,`jiefeng:{game.jiefeng}`,"
-                    f"`{game.model_path}`")
+        <details style="margin-bottom: 5px;">
+        <summary style="font-weight: bold; font-size: 14px; color: #000;">调试区</summary>
+        <div style="margin-top: 5px; font-size: 16px; display: flex; flex-wrap: wrap; gap: 5px;">
+            <code>is_free_turn: {game.is_free_turn}</code>
+            <code>pass_count: {game.pass_count}</code>
+            <code>jiefeng: {game.jiefeng}</code>
+            <code>{game.model_path}</code>
+            <code>1:{game.players[0].hand}</code>
+            <code>{game.players[0].last_played_cards}</code>
+            <code>2:{game.players[1].hand}</code>
+            <code>{game.players[1].last_played_cards}</code>
+            <code>3:{game.players[2].hand}</code>
+            <code>{game.players[2].last_played_cards}</code>
+            <code>4:{game.players[3].hand}</code>
+            <code>{game.players[3].last_played_cards}</code>
+        </div></details>""", unsafe_allow_html=True)
 # ============ 页面三：多人设置 ============
 elif st.session_state.page == "multi_setup":
     st.title("🕹️ 掼蛋联机大厅")
