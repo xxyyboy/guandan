@@ -53,6 +53,10 @@ if st.session_state.page == "setup":
         st.session_state.page = "main"
         st.rerun()
 
+    if st.button("联机"):
+        st.session_state.page = "multi_setup"
+        st.rerun()
+
 # ============ 页面二：主界面（游戏） ============
 elif st.session_state.page == "main":
     game: GuandanGame = st.session_state.game  # 类型提示
@@ -319,4 +323,84 @@ elif st.session_state.page == "main":
         """, unsafe_allow_html=True)
         st.markdown(f"`is_free_turn:{game.is_free_turn}`,`pass_count:{game.pass_count}`,`jiefeng:{game.jiefeng}`,"
                     f"`{game.model_path}`")
+# ============ 页面三：多人设置 ============
+elif st.session_state.page == "multi_setup":
+    st.title("🕹️ 掼蛋联机大厅")
+
+    model_dir = "models"
+    available_models = [f for f in os.listdir(model_dir) if f.endswith(".pth") and (f.startswith("a") or f.startswith("s"))]
+
+    # 房间号输入
+    room_id = st.text_input("请输入房间号（任意字符串）", value=st.session_state.get("room_id", "room-001"))
+    st.session_state.room_id = room_id
+
+    # 初始化房间配置（本地模拟；正式应从后端加载）
+    if "player_configs" not in st.session_state:
+        st.session_state.player_configs = [{
+            "model": available_models[0] if available_models else None,
+            "selected": False
+        } for _ in range(4)]
+
+    if "joined_index" not in st.session_state:
+        st.session_state.joined_index = None  # 尚未加入任何位置
+
+    cols = st.columns(4)
+    for i in range(4):
+        with cols[i]:
+            st.markdown(f"### 玩家 {i + 1}")
+
+            if st.session_state.player_configs[i]["selected"]:
+                if st.session_state.joined_index == i:
+                    st.success("✅ 你已加入该座位")
+
+                    if st.button("➖ 离开", key=f"swap_{i}"):
+                        st.session_state.player_configs[i]["selected"] = False
+                        st.session_state.joined_index = None
+                        # TODO: 请求后端取消该玩家占用座位
+                        st.rerun()
+
+                else:
+                    st.warning("已被占用")
+            else:
+                # AI 模型选择
+                selected_model = st.selectbox("模型", available_models,
+                                              index=available_models.index(
+                                                  st.session_state.player_configs[i]["model"]),
+                                              key=f"model_{i}")
+                st.session_state.player_configs[i]["model"] = selected_model
+
+                if st.session_state.joined_index is None:
+                    if st.button("➕ 加入", key=f"join_{i}"):
+                        st.session_state.player_configs[i]["selected"] = True
+                        st.session_state.joined_index = i
+
+                        # ✅ TODO: 请求后端 `/join_room`，上传 room_id、seat、model
+                        # requests.post("http://后端地址/join_room", json={...})
+                        st.rerun()
+                else:
+                    st.button("➕ 加入", key=f"join_{i}", disabled=True)
+
+    st.markdown("---")
+
+    # 如果当前用户是第一个加入的 → 房主
+    if st.session_state.joined_index == 0:
+        if st.button("🚀 开始游戏（房主）"):
+            # ✅ TODO: 请求后端 /start_game 并跳转页面4
+            st.success("游戏即将开始！（你是房主）")
+            # st.session_state.page = "game"
+            # st.rerun()
+    else:
+        st.markdown("等待房主开始游戏...")
+
+    if st.button("🔙 离开房间"):
+        # 清空状态
+        if st.session_state.joined_index is not None:
+            st.session_state.player_configs[st.session_state.joined_index]["selected"] = False
+        st.session_state.joined_index = None
+        st.session_state.page = "setup"
+        st.rerun()
+
+
+
+
 
