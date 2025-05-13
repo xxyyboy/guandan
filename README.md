@@ -33,7 +33,7 @@ python actor.py  # 训练主循环
 或打开 Streamlit 界面：
 
 ```bash
-streamlit run display.py
+streamlit run app.py
 ```
 
 ---
