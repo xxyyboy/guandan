@@ -289,7 +289,7 @@ elif st.session_state.page == "main":
             </a>
             """
             st.markdown(github_html, unsafe_allow_html=True)
-            st.markdown('![Static Badge](https://img.shields.io/badge/ver.-1.2.1-E85889)')
+            st.markdown('![Static Badge](https://img.shields.io/badge/ver.-1.2.3-E85889)')
         # 显示级牌
         st.markdown(f"""
             <div style="display: flex; gap: 20px; align-items: center; margin-bottom: 15px;">

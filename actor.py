@@ -206,21 +206,41 @@ def run_training(episodes=1000):
                     game.pass_count += 1
                     game.recent_actions[game.current_player] = ['Pass']  # 记录 Pass
 
-
+                # ============ 奖励函数 ============
                 # 从id找到JSON出牌结构
                 entry = find_entry_by_id(M,action_id)
                 if action_id ==0 :# pass无奖励
-                    reward = 0
-                else:# 对高级出牌奖励修正（*2）
-                    reward = float(len(entry['points'])*(1/entry['logic_point']))
-                    if 120 <= action_id <= 364 : reward += reward
-                # TODO: 三带中对子的判断
-                # 拆炸弹、连对惩罚
+                    reward = -0.05
+                else:
+                    if 120 <= action_id < 330:
+                        # DONE: 三带中对子的判断
+                        side_point = entry['points'][-1]  # 直接取副牌点数
+                        alpha = 0.8  # 控制副牌惩罚强度（越大惩罚越重）
+                        reward = len(entry['points']) / ((entry['logic_point'] ** 0.5) + alpha * (side_point ** 0.5))
+                    else:
+                        reward = float(len(entry['points']) / (entry['logic_point'] ** 0.5))
+                    # 对高级出牌奖励修正
+                    if 120 <= action_id < 330 : reward += reward * 2
+                    if action_id == 119 : reward += 1
+
+                # ========== 拆炸弹、连对惩罚 ==========
                 mask2 = torch.tensor(game.get_valid_action_mask(player.hand, M, game.active_level, game.last_play)).squeeze(0).to(device)
                 if 0 < action_id <= 48:# 出单牌、对子、三张
                     if (any(mask1[i] and not mask2[i] for i in range(49, 120)) or
                             any(mask1[i] and not mask2[i] for i in range(330, 375))):# 拆了炸、顺子、连对
-                        reward -= 1
+                        reward -= 0.8
+                elif 120 <= action_id < 330:# 出三带二，对子拆了炸
+                    side_point = entry['points'][-1]
+                    if 2 <= side_point <= 15:
+                        # TODO: 判断拆顺子、连对
+                        if any(mask1[side_point + 47 + 14 * i] and not mask2[side_point + 47 + 14 * i] for i in range(5)):
+                            reward -= 0.8
+                    else:
+                        if mask1[119] and not mask2[119]:
+                            reward -= 0.8
+                elif 330 <= action_id < 375:
+                    if any(mask1[i] and not mask2[i] for i in range(49, 120)):# 拆了炸
+                        reward -= 0.8
 
                 memory.append({"state": state, "action_id": action_id, "reward": reward})
                 player.last_played_cards = game.recent_actions[game.current_player]
