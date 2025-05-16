@@ -133,6 +133,7 @@ def train_on_batch(batch, gamma=0.99, device= None):
 # 模拟训练流程
 def run_training(episodes=1000):
     os.makedirs("models", exist_ok=True)
+    win = 0
     for ep in range(initial_ep, initial_ep + episodes): # 从上次的ep继续
         game = GuandanGame(verbose=False)
         memory = []
@@ -252,6 +253,8 @@ def run_training(episodes=1000):
                 round_history = [game.recent_actions[i] for i in range(4)]
                 game.history.append(round_history)
                 game.recent_actions = [['None'], ['None'], ['None'], ['None']]
+            if game.winning_team == 1:
+                win += 1
 
         final_reward = game.upgrade_amount*(1 if game.winning_team == 1 else -1)
         if memory:  # 确保 memory 不为空
@@ -259,7 +262,8 @@ def run_training(episodes=1000):
                 s["reward"] += gamma ** (len(memory) - i - 1) * final_reward
             al,cl = train_on_batch(memory)
             if (ep + 1) % 20 == 0:
-                print(f"Episode {ep + 1}, action_loss: {al:.4f},critic_loss: {cl:.4f}")
+                print(f"Episode {ep + 1}, action_loss: {al:.4f},critic_loss: {cl:.4f},胜{win}场")
+                win = 0
 
 
         if (ep + 1) % 200 == 0:
