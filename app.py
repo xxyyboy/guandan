@@ -1,5 +1,6 @@
 import streamlit as st
 from test import GuandanGame,M
+from backend import GuandanGame2
 import os
 
 def convert_card_display(card_str):
@@ -52,7 +53,7 @@ if st.session_state.page == "setup":
         st.rerun()
 
     if st.button("联机大厅",
-                 disabled=True):
+                 disabled=False):
         st.session_state.page = "multi_setup"
         st.rerun()
 
@@ -60,13 +61,6 @@ if st.session_state.page == "setup":
 elif st.session_state.page == "main":
     game: GuandanGame = st.session_state.game  # 类型提示
 
-    # 显示排名
-    if game.is_game_over:
-        st.success("🎉 游戏结束！")
-        st.markdown("**最终排名：**")
-        ranks = ["头游", "二游", "三游", "末游"]
-        for i, p in enumerate(game.ranking):
-            st.markdown(f"- {ranks[i]}：玩家 {p + 1}")
     # 分成两列：主区域（70%） 和 侧边栏区域（30%）
     main_col, history_col = st.columns([3, 1])
 
@@ -143,9 +137,15 @@ elif st.session_state.page == "main":
             </div>
         </div>
         """.format(last_play_type, last_play_str)
-
-        st.markdown(ai_html, unsafe_allow_html=True)
-
+        if not game.is_game_over:
+            st.markdown(ai_html, unsafe_allow_html=True)
+        # 显示排名
+        else:
+            st.success("🎉 游戏结束！")
+            st.markdown("**最终排名：**")
+            ranks = ["头游", "二游", "三游", "末游"]
+            for i, p in enumerate(game.ranking):
+                st.markdown(f"- {ranks[i]}：玩家 {p + 1}")
 
         # 玩家行动
         if not game.is_game_over and game.current_player == game.user_player:
@@ -296,7 +296,7 @@ elif st.session_state.page == "main":
                 <div>
                     <strong>当前级牌：</strong>
                     <span style="background-color: red; color: white; padding: 4px 10px; border-radius: 6px; font-weight: bold; font-size: 20px;">
-                        {game.active_level}
+                        {game.point_to_card(game.active_level)}
                     </span>
                 </div>
                 <div style="width: 1px; height: 20px; background-color: #ccc;"></div>
@@ -335,77 +335,93 @@ elif st.session_state.page == "main":
         </div></details>""", unsafe_allow_html=True)
 # ============ 页面三：多人设置 ============
 elif st.session_state.page == "multi_setup":
+    import uuid
+    import requests
+
     st.title("🕹️ 掼蛋联机大厅")
 
-    model_dir = "models"
-    available_models = [f for f in os.listdir(model_dir) if f.endswith(".pth") and (f.startswith("a") or f.startswith("s"))]
+    API_BASE = "https://f66a-183-222-15-62.ngrok-free.app"
 
-    # 房间号输入
-    room_id = st.text_input("请输入房间号（任意字符串）", value=st.session_state.get("room_id", "room-001"))
+    # 分配用户唯一 ID（每次访问自动生成）
+    if "user_id" not in st.session_state:
+        st.session_state.user_id = str(uuid.uuid4())
+
+    # 房间号输入框
+    room_id = st.text_input("请输入房间号", value=st.session_state.get("room_id", "room-001"))
     st.session_state.room_id = room_id
 
-    # 初始化房间配置（本地模拟；正式应从后端加载）
-    if "player_configs" not in st.session_state:
-        st.session_state.player_configs = [{
-            "model": available_models[0] if available_models else None,
-            "selected": False
-        } for _ in range(4)]
-
     if "joined_index" not in st.session_state:
-        st.session_state.joined_index = None  # 尚未加入任何位置
+        st.session_state.joined_index = None
+
+    # 拉取房间状态
+    try:
+        room_data = requests.get(f"{API_BASE}/room_state/{room_id}").json()
+        players = room_data.get("players", {})
+        game_started = room_data.get("game_started", False)
+        host_seat = room_data.get("host", None)
+    except:
+        players = {}
+        game_started = False
+        host_seat = None
+        st.warning("⚠️ 无法连接后端，以下为本地显示")
 
     cols = st.columns(4)
     for i in range(4):
         with cols[i]:
             st.markdown(f"### 玩家 {i + 1}")
+            seat = str(i)
+            occupant = players.get(seat)
 
-            if st.session_state.player_configs[i]["selected"]:
-                if st.session_state.joined_index == i:
+            is_me = occupant and occupant.get("id") == st.session_state.user_id
+
+            if occupant:
+                if is_me:
                     st.success("✅ 你已加入该座位")
-
-                    if st.button("➖ 离开", key=f"swap_{i}"):
-                        st.session_state.player_configs[i]["selected"] = False
+                    if st.button("➖ 离开", key=f"leave_{i}"):
+                        requests.post(f"{API_BASE}/leave_room", params={
+                            "room_id": room_id,
+                            "seat": i
+                        })
                         st.session_state.joined_index = None
-                        # TODO: 请求后端取消该玩家占用座位
                         st.rerun()
-
                 else:
-                    st.warning("已被占用")
+                    st.warning("🧍 已被其他玩家占用")
             else:
-                # AI 模型选择
-                selected_model = st.selectbox("模型", available_models,
-                                              index=available_models.index(
-                                                  st.session_state.player_configs[i]["model"]),
-                                              key=f"model_{i}")
-                st.session_state.player_configs[i]["model"] = selected_model
-
                 if st.session_state.joined_index is None:
                     if st.button("➕ 加入", key=f"join_{i}"):
-                        st.session_state.player_configs[i]["selected"] = True
+                        requests.post(f"{API_BASE}/join_room", params={
+                            "room_id": room_id,
+                            "player_name": f"玩家_{i}",
+                            "seat": i,
+                            "model": "user:" + st.session_state.user_id
+                        })
                         st.session_state.joined_index = i
-
-                        # ✅ TODO: 请求后端 `/join_room`，上传 room_id、seat、model
-                        # requests.post("http://后端地址/join_room", json={...})
                         st.rerun()
                 else:
                     st.button("➕ 加入", key=f"join_{i}", disabled=True)
 
     st.markdown("---")
 
-    # 如果当前用户是第一个加入的 → 房主
-    if st.session_state.joined_index == 0:
+    # 房主控制开始游戏
+    if st.session_state.joined_index == host_seat:
         if st.button("🚀 开始游戏（房主）"):
-            # ✅ TODO: 请求后端 /start_game 并跳转页面4
-            st.success("游戏即将开始！（你是房主）")
-            # st.session_state.page = "game"
-            # st.rerun()
-    else:
-        st.markdown("等待房主开始游戏...")
+            res = requests.post(f"{API_BASE}/start_game", params={
+                "room_id": room_id
+            })
+            if res.status_code == 200:
+                st.session_state.page = "game"
+                st.rerun()
+            else:
+                st.error("❌ 启动失败：" + res.text)
+    elif st.session_state.joined_index is not None:
+        st.markdown("🕓 等待房主开始游戏...")
 
     if st.button("🔙 离开房间"):
-        # 清空状态
         if st.session_state.joined_index is not None:
-            st.session_state.player_configs[st.session_state.joined_index]["selected"] = False
+            requests.post(f"{API_BASE}/leave_room", params={
+                "room_id": room_id,
+                "seat": st.session_state.joined_index
+            })
         st.session_state.joined_index = None
         st.session_state.page = "setup"
         st.rerun()
