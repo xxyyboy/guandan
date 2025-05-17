@@ -1,6 +1,5 @@
 import streamlit as st
 from test import GuandanGame,M
-from backend import GuandanGame2
 import os
 
 def convert_card_display(card_str):
@@ -52,7 +51,7 @@ if st.session_state.page == "setup":
         st.session_state.page = "main"
         st.rerun()
 
-    if st.button("联机大厅",
+    if st.button("联机大厅（已停止在streamlit上的开发）",
                  disabled=False):
         st.session_state.page = "multi_setup"
         st.rerun()
@@ -338,7 +337,7 @@ elif st.session_state.page == "multi_setup":
     import uuid
     import requests
 
-    st.title("🕹️ 掼蛋联机大厅")
+    st.title("🕹️ 掼蛋联机大厅（已停止在streamlit上的开发）")
 
     API_BASE = "https://b9a3-111-9-41-11.ngrok-free.app"
 
