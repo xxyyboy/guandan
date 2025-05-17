@@ -2,7 +2,6 @@ import numpy as np
 from get_actions import enumerate_colorful_actions, CARD_RANKS, SUITS,encode_hand_108
 import random
 from collections import Counter, defaultdict
-
 try:
     from c_rule import Rules  # 导入 Cython 版本
 except ImportError:
@@ -55,11 +54,10 @@ class Player:
 
 # TODO: 添加选座位接口
 # TODO: 检查 方块9 方块A 梅花K 黑桃Q 梅花J
-class GuandanGame:
-    def __init__(self, user_player=None, active_level=None, verbose=True, print_history=False,test=False, model_path="models/show2.pth"):
+class GuandanGame2:
+    def __init__(self, player_roles : list[str], model_path="models/show2.pth"):
         # **两队各自的级牌**
-        self.print_history = print_history
-        self.active_level = active_level if active_level else random.choice(range(2, 15))
+        self.active_level = random.choice(range(2, 15))
         # 历史记录，记录最近 20 轮的出牌情况（每轮包含 4 个玩家的出牌）
         self.history = []
         # **只传当前局的有效级牌**
@@ -69,10 +67,10 @@ class GuandanGame:
         self.last_play = None  # 记录上一手牌
         self.last_player = -1  # 记录上一手是谁出的
         self.pass_count = 0  # 记录连续 Pass 的次数
-        self.user_player = user_player - 1 if user_player else None  # 转换为索引（0~3）
+        #self.user_player = user_player - 1 if user_player else None  # 转换为索引（0~3）
+        self.player_roles = player_roles
         self.ranking = []  # 存储出完牌的顺序
         self.recent_actions = [[], [], [], []]
-        self.verbose = verbose  # 控制是否输出文本
         self.team_1 = {0, 2}
         self.team_2 = {1, 3}
         self.is_free_turn = True
@@ -80,7 +78,6 @@ class GuandanGame:
         self.winning_team = 0
         self.is_game_over = False
         self.upgrade_amount = 0
-        self.test=test
         self.model_path = model_path
         self.actor = load_actor_model(self.model_path)
         self.R = RANKS + [RANKS[self.active_level-2]] + ['小王', '大王']
@@ -97,8 +94,7 @@ class GuandanGame:
 
     def log(self, message):
         """控制是否打印消息"""
-        if self.verbose:
-            print(message)
+        pass
 
     def sort_cards(self, cards):
         """按牌的大小排序（从大到小）"""
@@ -179,55 +175,14 @@ class GuandanGame:
 
     def play_turn(self):
         """执行当前玩家的回合"""
-        player = self.players[self.current_player]  # 获取当前玩家对象
-        # TODO: 添加选座位接口
-        if self.user_player == self.current_player:
-            result = self.user_play(player)
-        else:
-            result = self.actor_play(player)
+        player = self.players[self.current_player]
+        role = self.player_roles[self.current_player]
 
-        return result
-
-    def get_possible_moves(self, player_hand):
-        """获取所有可能的合法出牌，包括顺子（5 张）、连对（aabbcc）、钢板（aaabbb）"""
-
-        possible_moves = []
-        hand_points = [self.rules.get_rank(card) for card in player_hand]  # 仅点数（去掉花色）
-        hand_counter = Counter(hand_points)  # 统计点数出现次数
-        unique_points = sorted(set(hand_points))  # 仅保留唯一点数，排序
-
-        # 1. **原逻辑（单张、对子、三条、炸弹等）**
-        for size in [1, 2, 3, 4, 5, 6, 7, 8]:
-            for i in range(len(player_hand) - size + 1):
-                move = player_hand[i:i + size]
-                if self.rules.can_beat(self.last_play, move):
-                    possible_moves.append(move)
-
-        # 2. **检查顺子（固定 5 张）**
-        for i in range(len(unique_points) - 4):  # 只找长度=5 的顺子
-            seq = unique_points[i:i + 5]
-            if self.rules._is_consecutive(seq) and 15 not in seq:  # 不能有大小王
-                move = self._map_back_to_suit(seq, player_hand)  # 还原带花色的牌
-                if self.rules.can_beat(self.last_play, move):
-                    possible_moves.append(move)
-
-        # 3. **检查连对（aabbcc）**
-        for i in range(len(unique_points) - 2):  # 只找 3 组对子
-            seq = unique_points[i:i + 3]
-            if all(hand_counter[p] >= 2 for p in seq):  # 每张至少两张
-                move = self._map_back_to_suit(seq, player_hand, count=2)  # 每点数取 2 张
-                if self.rules.can_beat(self.last_play, move):
-                    possible_moves.append(move)
-
-        # 4. **检查钢板（aaabbb）**
-        for i in range(len(unique_points) - 1):  # 只找 2 组三张
-            seq = unique_points[i:i + 2]
-            if all(hand_counter[p] >= 3 for p in seq):  # 每张至少 3 张
-                move = self._map_back_to_suit(seq, player_hand, count=3)  # 每点数取 3 张
-                if self.rules.can_beat(self.last_play, move):
-                    possible_moves.append(move)
-
-        return possible_moves
+        if role.startswith("user:"):
+            # 联机模式：等待前端用户操作，返回等待状态
+            return "wait_for_user", role[5:]  # 提取 user_id
+        elif role == "ai":
+            return self.actor_play(player)
 
     def _map_back_to_suit(self, seq, sorted_hand, count=1):
         """从手牌映射回带花色的牌"""
@@ -324,57 +279,6 @@ class GuandanGame:
 
         return mask
 
-    def ai_play(self, player):
-        """AI 出牌逻辑（随机选择合法且能压过上家的出牌）"""
-
-        # **如果玩家已经打完，仍然记录一个空列表，然后跳过**
-        if self.current_player in self.ranking:
-            self.recent_actions[self.current_player] = []  # 记录空列表
-            self.current_player = (self.current_player + 1) % 4
-
-            return self.check_game_over()
-
-        player_hand = player.hand
-
-        possible_moves = self.get_possible_moves(player_hand)
-        if not self.is_free_turn:
-            possible_moves.append([])
-
-        if not possible_moves:
-            self.log(f"玩家 {self.current_player + 1} Pass")
-            self.pass_count += 1
-            self.recent_actions[self.current_player] = ['Pass']  # 记录 Pass
-        else:
-            chosen_move = random.choice(possible_moves)  # 随机选择一个合法的牌型
-            if not chosen_move:
-                self.log(f"玩家 {self.current_player + 1} Pass")
-                self.pass_count += 1
-                self.recent_actions[self.current_player] = ['Pass']  # 记录 Pass
-            else:
-                # 如果 chosen_move 不为空，继续进行正常的出牌逻辑
-                self.last_play = chosen_move
-                self.last_player = self.current_player
-                for card in chosen_move:
-                    player.played_cards.append(card)
-                    player_hand.remove(card)
-                self.log(f"玩家 {self.current_player + 1} 出牌: {' '.join(chosen_move)}")
-                self.recent_actions[self.current_player] = list(chosen_move)  # 记录出牌
-                self.jiefeng = False
-                if not player_hand:  # 玩家出完牌
-                    self.log(f"\n🎉 玩家 {self.current_player + 1} 出完所有牌！\n")
-                    self.ranking.append(self.current_player)
-                    if len(self.ranking) <= 2:
-                        self.jiefeng = True
-
-                self.pass_count = 0
-                if not player_hand:
-                    self.pass_count -= 1
-
-                if self.is_free_turn:
-                    self.is_free_turn = False
-        player.last_played_cards = self.recent_actions[self.current_player]
-        self.current_player = (self.current_player + 1) % 4
-        return self.check_game_over()
 
     def actor_play(self, player):
         # 1. 模型推理
@@ -581,19 +485,6 @@ class GuandanGame:
         for i, player in enumerate(self.ranking):
             self.log(f"{ranks[i]}：玩家 {player + 1}")
 
-    def play_game(self):
-        """执行一整局游戏"""
-        self.log(f"\n🎮 游戏开始！当前级牌：{RANKS[self.active_level - 2]}")
-
-        while True:
-            if self.play_turn():
-                if self.current_player != 0:
-                    round_history = [self.recent_actions[i] for i in range(4)]
-                    self.history.append(round_history)
-                if self.print_history:
-                    for i in range(len(self.history)):
-                        self.log(self.history[i])
-                break
 
     def show_user_hand(self):
         """显示用户手牌（按排序后的顺序）"""
@@ -805,8 +696,3 @@ class GuandanGame:
             "level_rank": self.active_level,
             "recent_actions": self.recent_actions
         }
-
-if __name__ == "__main__":
-
-    game = GuandanGame(user_player=1, active_level=None, verbose=True, print_history=True)
-    game.play_game()
