@@ -340,7 +340,7 @@ elif st.session_state.page == "multi_setup":
 
     st.title("🕹️ 掼蛋联机大厅")
 
-    API_BASE = "https://f66a-183-222-15-62.ngrok-free.app"
+    API_BASE = "https://b9a3-111-9-41-11.ngrok-free.app"
 
     # 分配用户唯一 ID（每次访问自动生成）
     if "user_id" not in st.session_state:
@@ -363,7 +363,7 @@ elif st.session_state.page == "multi_setup":
         players = {}
         game_started = False
         host_seat = None
-        st.warning("⚠️ 无法连接后端，以下为本地显示")
+        st.warning("⚠️ 无法连接服务器，以下为本地显示")
 
     cols = st.columns(4)
     for i in range(4):

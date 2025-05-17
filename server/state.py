@@ -83,7 +83,13 @@ class RoomStore:
 
     def get_state(self, room_id: str):
         if room_id not in self.rooms:
-            raise Exception("房间不存在")
+            # 创建空房（无玩家）
+            self.rooms[room_id] = RoomState(
+                room_id=room_id,
+                players={},
+                host=None,
+                game_started=False
+            )
         return self.rooms[room_id]
 
 room_store = RoomStore()
