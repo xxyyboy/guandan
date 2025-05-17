@@ -3,7 +3,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from server.schemas import PlayerConfig, RoomState
 from server.state import room_store
-
+import os
 app = FastAPI()
 
 # 允许跨域请求（前端用 Streamlit，跨域请求这个后端）
@@ -14,6 +14,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.get("/list_models")
+def list_models():
+    model_dir = "models"
+    models = [f for f in os.listdir(model_dir) if f.endswith(".pth")]
+    # 可选：将 'show2.pth' 排到最前
+    models.sort(key=lambda x: 0 if x == "show2.pth" else 1)
+    return {"models": models}
 
 @app.get("/")
 def read_root():
