@@ -56,7 +56,7 @@ class Player:
 # TODO: 添加选座位接口
 # TODO: 检查 方块9 方块A 梅花K 黑桃Q 梅花J
 class GuandanGame:
-    def __init__(self, user_player=None, active_level=None, verbose=True, print_history=False,test=False, model_path="models/show2.pth"):
+    def __init__(self, user_player: int, active_level=None, verbose=True, print_history=False,test=False, model_path="models/show2.pth"):
         # **两队各自的级牌**
         self.print_history = print_history
         self.active_level = active_level if active_level else random.choice(range(2, 15))
@@ -69,7 +69,9 @@ class GuandanGame:
         self.last_play = None  # 记录上一手牌
         self.last_player = -1  # 记录上一手是谁出的
         self.pass_count = 0  # 记录连续 Pass 的次数
-        self.user_player = user_player - 1 if user_player else None  # 转换为索引（0~3）
+        if not isinstance(user_player, int) or user_player not in {1, 2, 3, 4}:
+            raise ValueError("user_player 必须是 1-4 的整数")
+        self.user_player = int(user_player - 1) if user_player else None  # 转换为索引（0~3）
         self.ranking = []  # 存储出完牌的顺序
         self.recent_actions = [[], [], [], []]
         self.verbose = verbose  # 控制是否输出文本
@@ -809,4 +811,4 @@ class GuandanGame:
 if __name__ == "__main__":
 
     game = GuandanGame(user_player=1, active_level=None, verbose=True, print_history=True)
-    game.play_game()
+    #game.play_game()
