@@ -66,7 +66,7 @@ class GuandanGame:
         self.rules = Rules(self.active_level)
         self.players = [Player(hand) for hand in deal_cards(shuffle_deck(create_deck()))]  # 发牌
         self.current_player = 0  # 当前出牌玩家
-        self.last_play = None  # 记录上一手牌
+        self.last_play = []  # 记录上一手牌
         self.last_player = -1  # 记录上一手是谁出的
         self.pass_count = 0  # 记录连续 Pass 的次数
         if not isinstance(user_player, int) or user_player not in {1, 2, 3, 4}:

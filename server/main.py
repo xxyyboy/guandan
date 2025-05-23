@@ -42,7 +42,7 @@ class SoloGameConfig(BaseModel):
 
 @app.post("/create_solo_game")
 def create_solo_game(config: SoloGameConfig):
-    print(f"接收参数: position={config.position}, type={type(config.position)}")  # 调试
+    # print(f"接收参数: position={config.position}, type={type(config.position)}")  # 调试
     game = GuandanGame(
         user_player=int(config.position),  # 强制转换为整数
         verbose=False,
@@ -50,7 +50,7 @@ def create_solo_game(config: SoloGameConfig):
     )
     print(f"游戏初始化完成: user_player={game.user_player}")  # 验证
     solo_sessions[config.user_id] = game
-    return {"status": "ok"}
+    return {"status": "solo game created", "user_id": config.user_id}
 
 
 
@@ -63,9 +63,12 @@ def solo_state(user_id: str):
     state = game.get_game_state()
 
     return {
-        "hand": [game.players[0].hand, game.players[1].hand, game.players[2].hand, game.players[3].hand],
-        "hand_size": [len(game.players[0].hand), len(game.players[1].hand), len(game.players[2].hand), len(game.players[3].hand)],
-        "last_play": game.players[game.user_player].last_played_cards,
+        "hand": [game.players[i].hand for i in range(4)], # 手牌
+        "user_hand": game.players[game.user_player].hand, # 用户手牌
+        "hand_size": [len(game.players[i].hand) for i in range(4)], # 手牌数量
+        "last_play": game.last_play, # 上一次有效出牌
+        "last_player": game.last_player, # 上一次出牌的玩家
+        "last_plays": [game.players[i].last_played_cards for i in range(4)], # 所有人上次出牌
         "current_player": game.current_player,
         "user_player": game.user_player,
         "history": state["history"],
@@ -76,7 +79,7 @@ def solo_state(user_id: str):
         "last_play_type": game.map_cards_to_action(game.last_play, M, game.active_level)["type"] if game.last_play else "无",
         "ai_suggestions": game.get_ai_suggestions(),
         "active_level": game.point_to_card(game.active_level),
-        "last_player": game.last_player
+        
     }
     
 @app.post("/solo_play_card")
@@ -95,7 +98,20 @@ def solo_autoplay(data: dict):
     if not game:
         return {"error": "无此游戏"}
     game.step()  # 循环执行一步
-    return {"status": "ok"}
+    return {"status": "autoplay step executed"}
+
+@app.post("/solo_new_game")
+def solo_new_game(data: dict):
+    user_id = data["user_id"]
+    model = data["model"]
+    position = data["position"]
+    game = GuandanGame(
+        user_player=int(position),  # 强制转换为整数
+        verbose=False,
+        model_path=os.path.join("models", model)
+    )
+    solo_sessions[user_id] = game
+    return {"status": "new game created"}
 
     
 @app.get("/")

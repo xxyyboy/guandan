@@ -12,10 +12,11 @@
         <!-- 玩家状态 -->
         <div class="player-status-container">
           <div v-for="i in 4" :key="i" class="player-card" 
-               :style="{ backgroundColor: i-1 === gameData.last_player ? '#ffe9b3' : '#f5f5f5' }">
+               :style="{ backgroundColor: i-1 === gameData.last_player ? '#ffe9b3' : '#f5f5f5' }"
+               :class="{ 'current-player': i-1 === gameData.current_player }">
             <div class="player-name">
               玩家 {{ i }}{{ i-1 === gameData.user_player ? ' 🧑‍💻' : '' }}
-              <span v-if="gameData.ranking.includes(i-1)" class="player-rank">
+              <span v-if="gameData.ranking?.includes(i-1)" class="player-rank">
                 {{ getRankText(gameData.ranking.indexOf(i-1)) }}
               </span>
             </div>
@@ -38,7 +39,7 @@
             <h3>📦 上次出牌</h3>
             <div>类型：<strong>{{ gameData.last_play_type }}</strong></div>
             <div class="last-play-cards">
-              {{ gameData.last_play.join(' ') || '无' }}
+              {{ gameData.last_play }}
             </div>
           </div>
         </div>
@@ -55,13 +56,13 @@
         </div>
 
         <!-- 玩家行动区域 -->
-        <div v-if="!gameData.is_game_over && gameData.current_player === gameData.user_player" class="player-action-container">
+        <div v-if="!gameData.is_game_over" class="player-action-container">
           <h3>🕹️ 出牌</h3>
           
           <!-- 手牌选择 -->
           <div class="hand-cards">
             <button
-              v-for="(card, index) in gameData.hand[gameData.user_player]"
+              v-for="(card, index) in gameData.user_hand"
               :key="index"
               @click="toggleSelect(index)"
               :class="{ 'selected-card': selected.includes(index) }"
@@ -85,7 +86,7 @@
           </div>
 
           <!-- 操作按钮 -->
-          <div class="action-buttons">
+          <div v-if="gameData.current_player === gameData.user_player" class="action-buttons">
             <button @click="clearSelection" class="secondary-btn">🗑️ 清空选择</button>
             <button @click="pass" :disabled="gameData.is_free_turn" class="secondary-btn">👟 PASS</button>
             <button @click="submitMove" class="primary-btn">✔️ 确认出牌</button>
@@ -96,16 +97,20 @@
 
       <!-- 侧边栏 -->
       <div class="sidebar">
-        <!-- 操作按钮 -->
-        <div class="sidebar-buttons">
+        <!-- 操作按钮网格 -->
+        <div class="sidebar-grid">
           <button @click="newGame" class="sidebar-btn">🔄 新一局</button>
           <button @click="goBack" class="sidebar-btn">🔙 返回设置</button>
+        </div>
+        
+        <!-- 下方链接和信息 -->
+        <div class="sidebar-footer">
           <a href="https://github.com/746505972/guandan" target="_blank" class="github-link">
             <img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/github/github-original.svg" width="20">
             <span>查看项目仓库</span>
           </a>
+          <div class="badge">ver. 1.3.0</div>
         </div>
-        <div class="badge">ver. 1.2.3</div>
 
         <!-- 当前状态 -->
         <div class="current-status">
@@ -160,12 +165,14 @@ const refreshState = async () => {
     return;
   }
   try {
-    const res = await api.get(`/solo_state/${store.userId}`);
+    const res = await api.get(`/solo_state/${store.userId}`, {
+      headers: {'ngrok-skip-browser-warning': 'true'}
+    });
     gameData.value = res.data;
+    console.log('刷新后的游戏状态:', gameData.value);
     
-    // 检查是否需要自动推进游戏
-    if (!gameData.value.is_game_over && 
-        gameData.value.current_player !== gameData.value.user_player) {
+    // 无论是否轮到玩家都尝试自动推进
+    if (!gameData.value.is_game_over) {
       autoAdvanceGame();
     }
   } catch (e) {
@@ -175,21 +182,27 @@ const refreshState = async () => {
 
 // 自动推进游戏
 const autoAdvanceGame = async () => {
-  if (isAutoPlaying.value) return;
+  if (isAutoPlaying.value || !gameData.value?.current_player) return;
   
   isAutoPlaying.value = true;
   try {
-    // 持续自动推进，直到轮到玩家或游戏结束
-    while (!gameData.value.is_game_over && 
-           gameData.value.current_player !== gameData.value.user_player) {
-      const res = await api.post('/solo_autoplay', { user_id: store.userId });
-      gameData.value = res.data;
-      
-      // 添加短暂延迟避免过于频繁请求
+    while (
+      !gameData.value.is_game_over && 
+      gameData.value.current_player !== gameData.value.user_player
+    ) {
+      const res = await api.post('/solo_autoplay', { user_id: store.userId }, {
+        headers: { 'ngrok-skip-browser-warning': 'true' }
+      });
+      const state = await api.get(`/solo_state/${store.userId}`, {
+        headers: { 'ngrok-skip-browser-warning': 'true' }
+      });
+      gameData.value = state.data;
+
+      // 添加延迟避免频繁请求
       await new Promise(resolve => setTimeout(resolve, 500));
     }
   } catch (e) {
-    console.error('自动推进游戏出错', e);
+    console.error('自动推进出错:', e);
   } finally {
     isAutoPlaying.value = false;
   }
@@ -205,13 +218,13 @@ watch(() => gameData.value, (newVal) => {
 
 // 其他已有的方法保持不变...
 const getHandColor = (i: number) => 
-  gameData.value.hand_size[i] < 3 ? 'red' : 'black'
+  gameData.value?.hand_size?.[i] < 3 ? 'red' : 'black'
 
 const getHandSize = (i: number) => 
-  gameData.value.hand_size?.[i] || 0
+  gameData.value?.hand_size?.[i] ?? gameData.value?.hand?.[i]?.length ?? "unknown"
 
 const getLastPlay = (i: number) => 
-  gameData.value.statuses?.[i]?.last_play?.join(' ') || 'Pass'
+  gameData.value?.last_plays?.[i]?.join(' ') ?? gameData.value?.last_play_history?.[i] ?? 'unknown'
 
 const getRankText = (rankIndex: number) => {
   const ranks = ["🏅头游", "🥈二游", "🥉三游", "🛑末游"];
@@ -255,30 +268,45 @@ const convertCardDisplay = (cardStr: string) => {
 }
 
 const submitMove = async () => {
-  const res = await api.post('/solo_play_card', {
-    user_id: store.userId,
-    cards: selectedCards.value
-  })
-  selected.value = []
-  refreshState()
+  try {
+    await api.post('/solo_play_card', {
+      user_id: store.userId,
+      cards: selectedCards.value
+    }, {
+      headers: {'ngrok-skip-browser-warning': 'true'}
+    });
+    selected.value = [];
+    await refreshState(); // 确保等待状态刷新完成
+  } catch (e) {
+    console.error('出牌失败', e);
+  }
 }
 
 const pass = async () => {
-  const res = await api.post('/solo_play_card', {
-    user_id: store.userId,
-    cards: []
-  })
-  selected.value = []
-  refreshState()
+  try {
+    await api.post('/solo_play_card', {
+      user_id: store.userId,
+      cards: []
+    }, {
+      headers: {'ngrok-skip-browser-warning': 'true'}
+    });
+    selected.value = [];
+    await refreshState(); // 确保等待状态刷新完成
+  } catch (e) {
+    console.error('PASS失败', e);
+  }
 }
 
 const autoPlay = async () => {
-  await api.post('/solo_autoplay', { user_id: store.userId })
+  await api.post('/solo_autoplay', { user_id: store.userId },{headers: {'ngrok-skip-browser-warning': 'true'}})
   refreshState()
 }
 
 const newGame = async () => {
-  await api.post('/solo_new_game', { user_id: store.userId })
+  await api.post('/solo_new_game', { user_id: store.userId , model: store.selectedModel ,position: store.joinedSeat},
+  {headers: {'ngrok-skip-browser-warning': 'true',
+    'Content-Type': 'application/json'
+  }})
   refreshState()
 }
 
@@ -296,7 +324,7 @@ onMounted(refreshState)
   flex-direction: column;
   align-items: center;
   width: 100%;
-  padding: 1rem;
+  padding: 1rem clamp(1rem, 5%, 3rem); /* 最小1rem，最大3rem，5%视口宽度 */
 }
 
 .game-container {
@@ -313,7 +341,6 @@ onMounted(refreshState)
 }
 
 .sidebar {
-  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 1rem;
@@ -355,7 +382,7 @@ onMounted(refreshState)
 .ai-suggestion-container {
   background-color: #e3f2fd;
   border-radius: 10px;
-  padding: 1.25rem;
+  padding: 0.5rem;
   display: flex;
   gap: 1.25rem;
 }
@@ -480,6 +507,21 @@ onMounted(refreshState)
 }
 
 /* 侧边栏样式 */
+.sidebar-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.5rem;
+}
+
+.sidebar-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid #eee;
+}
+
 .sidebar-buttons {
   display: flex;
   flex-wrap: wrap;
@@ -498,18 +540,12 @@ onMounted(refreshState)
 }
 
 .github-link {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.5rem;
-  border-radius: 6px;
-  background-color: #f5f5f5;
-  border: 1px solid #ccc;
   text-decoration: none;
   color: #333;
   font-size: 0.9rem;
-  flex: 1;
-  min-width: 120px;
 }
 
 .badge {
@@ -518,7 +554,6 @@ onMounted(refreshState)
   padding: 0.25rem 0.5rem;
   border-radius: 4px;
   font-size: 0.8rem;
-  width: fit-content;
 }
 
 .current-status {
@@ -603,6 +638,23 @@ onMounted(refreshState)
 .game-over-container h3 {
   margin-top: 0;
   color: #2e7d32;
+}
+
+/* 当前玩家发光效果 */
+.player-card.current-player {
+  position: relative;
+  box-shadow: 0 0 10px 3px rgba(255, 215, 0, 0.7);
+  animation: pulse-glow 1.5s infinite alternate;
+  z-index: 1;
+}
+
+@keyframes pulse-glow {
+  0% {
+    box-shadow: 0 0 5px 2px rgba(0, 215, 0, 0.055);
+  }
+  100% {
+    box-shadow: 0 0 15px 5px rgba(0, 215, 0, 0.9);
+  }
 }
 
 @media (max-width: 992px) {
