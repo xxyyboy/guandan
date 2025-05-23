@@ -1,132 +1,166 @@
 <template>
-  <div class="solo">
-    <h2>🧑‍💻 单人对战界面</h2>
-    <div v-if="!gameData">加载中...</div>
+  <div>
+    <h1>🕹️ 掼蛋联机大厅</h1>
 
-    <div v-else>
-      <div style="margin-bottom: 10px;">
-        <strong>当前级牌：</strong> {{ gameData.active_level }} |
-        <strong>当前轮到：</strong> 玩家 {{ gameData.current_player + 1 }}
-      </div>
+    <div>
+      <!-- 房间号输入框 -->
+      <input
+        type="text"
+        v-model="roomId"
+        placeholder="请输入房间号"
+        class="input-room"
+      />
+      <p>房间号：{{ roomId }}</p>
+    </div>
 
-      <!-- 玩家状态 -->
-      <div class="players" style="display: flex; gap: 10px; margin-bottom: 10px;">
-        <div v-for="i in 4" :key="i" :style="{ flex: 1, backgroundColor: gameData.last_player === i-1 ? '#ffe9b3' : '#f3f3f3', padding: '10px', borderRadius: '6px' }">
-          <strong>玩家 {{ i }}{{ i-1 === gameData.user_player ? ' 🧑‍💻' : '' }}</strong><br />
-          <div>手牌：<span :style="{ color: getHandColor(i-1) }">{{ getHandSize(i-1) }}</span> 张</div>
-          <div>出牌：{{ getLastPlay(i-1) }}</div>
-        </div>
-      </div>
-
-      <!-- AI建议与上次出牌 -->
-      <div style="background:#eef3fa; padding:12px; border-radius:8px; display:flex; gap:20px;">
-        <div style="flex: 3;">
-          <strong>🤖 AI建议：</strong>
-          <ul>
-            <li v-for="(sug, i) in gameData.ai_suggestions" :key="i">{{ sug }}</li>
-          </ul>
-        </div>
-        <div style="flex:1;">
-          <strong>📦 上次出牌：</strong><br />
-          类型：{{ gameData.last_play_type }}<br />
-          内容：{{ gameData.last_play.join(' ') || '无' }}
-        </div>
-      </div>
-
-      <!-- 选择出牌 -->
-      <div style="margin-top: 20px;">
-        <h3>🃏 你的手牌：</h3>
-        <div style="display: flex; flex-wrap: wrap; gap: 8px;">
-          <button
-            v-for="(card, index) in gameData.hand"
-            :key="index"
-            @click="toggleSelect(index)"
-            :style="{
-              padding: '8px 12px',
-              borderRadius: '6px',
-              border: selected.includes(index) ? '2px solid green' : '1px solid #ccc',
-              background: selected.includes(index) ? '#d0f0d0' : '#fff'
-            }"
-          >
-            {{ card }}
-          </button>
-        </div>
-
-        <div style="margin-top: 10px;">
-          已选：{{ selectedCards.join('、') || '无' }}
-        </div>
-
-        <div style="margin-top: 10px;">
-          <button @click="submitMove">✔️ 出牌</button>
-          <button @click="pass" :disabled="gameData.is_free_turn">👟 跳过</button>
-          <button @click="autoPlay">🤖 自动</button>
-          <button @click="refreshState">🔁 刷新</button>
-        </div>
-
-        <div v-if="gameData.is_game_over" style="margin-top: 20px;">
-          <h3>🎉 游戏结束</h3>
-          <p>排名：{{ gameData.ranking.map(i => '玩家 ' + (i+1)).join(' > ') }}</p>
+    <div class="player">
+      <!-- 玩家座位 -->
+      <div v-for="(player, index) in players" :key="index" class="player">
+        <div v-if="player">
+          <strong>玩家 {{ index + 1 }}</strong>
+          <div v-if="player.name">
+            <p>{{ player.name }}</p>
+            <p>模型：{{ player.model || "AI" }}</p>
+            <button @click="leaveSeat(index)">离开</button>
+          </div>
+          <div v-else>
+            <input v-model="playerNames[index]" placeholder="请输入名字" />
+            <button @click="joinSeat(index)">加入</button>
+          </div>
         </div>
       </div>
     </div>
+
+    <div v-if="joinedIndex === hostSeat">
+      <button @click="startGame" :disabled="!canStartGame">🚀 开始游戏</button>
+    </div>
+
+    <button @click="leaveRoom">🔙 离开房间</button>
   </div>
 </template>
 
-<script lang="ts" setup>
-import { onMounted, ref, computed } from 'vue'
-import { useGlobalStore } from '../stores'
-import { api } from '../utils/axios'
+<script>
+import { ref, onMounted } from "vue";
+import axios from "axios";
 
-const store = useGlobalStore()
-const gameData = ref<any>(null)
-const selected = ref<number[]>([])
+export default {
+  data() {
+    return {
+      roomId: "", // 房间号
+      players: [null, null, null, null], // 玩家座位
+      playerNames: ["", "", "", ""], // 玩家名字输入
+      hostSeat: 0, // 房主座位（默认 1号座位）
+      joinedIndex: null, // 当前加入的座位
+      canStartGame: false, // 是否能启动游戏
+    };
+  },
+  computed: {
+    // 判断是否为房主（1号座位）
+    isHost() {
+      return this.joinedIndex === this.hostSeat;
+    },
+  },
+  methods: {
+    // 初始化房间状态
+    async fetchRoomState() {
+      try {
+        const res = await axios.get(`https://precious-ideally-ostrich.ngrok-free.app/room_state/${this.roomId}`);
+        this.players = res.data.players;
+        this.hostSeat = res.data.host || 0;
+        this.canStartGame = res.data.players.every(player => player !== null);
+      } catch (error) {
+        console.error("获取房间状态失败", error);
+      }
+    },
 
-const refreshState = async () => {
-  const res = await api.get(`/solo_state/${store.userId}`)
-  gameData.value = res.data
-}
+    // 加入座位
+    async joinSeat(index) {
+      try {
+        const playerName = this.playerNames[index];
+        const model = this.joinedIndex === null ? "user" : "ai"; // 如果已加入，自动使用AI模型
+        const res = await axios.post("https://precious-ideally-ostrich.ngrok-free.app/join_room", {
+          room_id: this.roomId,
+          seat: index,
+          player_name: playerName || `玩家 ${index + 1}`,
+          model: model,
+        });
+        this.joinedIndex = index; // 更新已加入座位
+        this.fetchRoomState(); // 更新房间状态
+      } catch (error) {
+        console.error("加入座位失败", error);
+      }
+    },
 
-const getHandColor = (i: number) =>
-  gameData.value.ranking.includes(i) ? 'green' : gameData.value.hand_size < 3 ? 'red' : 'black'
+    // 离开座位
+    async leaveSeat(index) {
+      try {
+        const res = await axios.post("https://precious-ideally-ostrich.ngrok-free.app/leave_room", {
+          room_id: this.roomId,
+          seat: index,
+        });
+        this.joinedIndex = null; // 重置已加入座位
+        this.fetchRoomState(); // 更新房间状态
+      } catch (error) {
+        console.error("离开座位失败", error);
+      }
+    },
 
-const getHandSize = (i: number) =>
-  gameData.value.user_player === i ? gameData.value.hand.length : gameData.value?.statuses?.[i]?.hand_size || '??'
+    // 启动游戏
+    async startGame() {
+      try {
+        const res = await axios.post("https://precious-ideally-ostrich.ngrok-free.app/start_game", {
+          room_id: this.roomId,
+        });
+        if (res.status === 200) {
+          this.$router.push({ name: "game" }); // 跳转到游戏页面
+        }
+      } catch (error) {
+        console.error("启动游戏失败", error);
+      }
+    },
 
-const getLastPlay = (i: number) =>
-  gameData.value.statuses?.[i]?.last_play?.join(' ') || 'Pass'
+    // 离开房间
+    async leaveRoom() {
+      if (this.joinedIndex !== null) {
+        await this.leaveSeat(this.joinedIndex);
+      }
+      this.$router.push({ name: "setup" }); // 返回设置页面
+    },
+  },
 
-const toggleSelect = (idx: number) => {
-  if (selected.value.includes(idx)) {
-    selected.value = selected.value.filter(i => i !== idx)
-  } else {
-    selected.value.push(idx)
-  }
-}
-
-const selectedCards = computed(() => selected.value.map(i => gameData.value.hand[i]))
-
-const submitMove = async () => {
-  const res = await api.post('/solo_play_card', {
-    user_id: store.userId,
-    cards: selectedCards.value
-  })
-  selected.value = []
-  refreshState()
-}
-
-const pass = async () => {
-  const res = await api.post('/solo_play_card', {
-    user_id: store.userId,
-    cards: []
-  })
-  selected.value = []
-  refreshState()
-}
-
-const autoPlay = async () => {
-  await api.post('/solo_autoplay', { user_id: store.userId })
-  refreshState()
-}
-
-onMounted(refreshState)
+  // 页面加载时获取房间状态
+  onMounted() {
+    this.roomId = this.$route.params.roomId || "room-001"; // 通过路由获取房间号（可选）
+    this.fetchRoomState();
+  },
+};
 </script>
+
+<style scoped>
+.player {
+  margin-bottom: 10px;
+}
+
+.input-room {
+  padding: 5px;
+  font-size: 16px;
+}
+
+button {
+  margin-top: 10px;
+  padding: 8px 16px;
+  background-color: #007bff;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+button:disabled {
+  background-color: gray;
+}
+
+button:hover {
+  background-color: #0056b3;
+}
+</style>
