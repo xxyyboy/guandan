@@ -21,6 +21,24 @@ action_dim = len(M)
 # 构建动作映射字典
 M_id_dict = {a['id']: a for a in M}
 RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
+type_to_chinese = {
+    "None": "无",
+    "Pass (不出)":"Pass",
+    "single": "单张",
+    "pair": "对子",
+    "triple": "三张",
+    "4_bomb": "4炸",
+    "5_bomb": "5炸",
+    "6_bomb": "6炸",
+    "7_bomb": "7炸",
+    "8_bomb": "8炸",
+    "joker_bomb": "天王炸",
+    "three_with_pair": "三带二",
+    "straight": "顺子",
+    "pair_chain": "连对",
+    "gangban": "钢板",
+    "flush_rocket": "同花顺"
+}
 class ActorNet(nn.Module):
     def __init__(self, state_dim=3049, action_dim=action_dim, hidden_dim=512):
         super().__init__()
@@ -56,7 +74,7 @@ class Player:
 # TODO: 添加选座位接口
 # TODO: 检查 方块9 方块A 梅花K 黑桃Q 梅花J
 class GuandanGame:
-    def __init__(self, user_player: int, active_level=None, verbose=True, print_history=False,test=False, model_path="models/show2.pth"):
+    def __init__(self, user_player: int, active_level=None, verbose=True, print_history=False,test=False, model_path="models/show2.pth",sug_len=3):
         # **两队各自的级牌**
         self.print_history = print_history
         self.active_level = active_level if active_level else random.choice(range(2, 15))
@@ -86,6 +104,7 @@ class GuandanGame:
         self.model_path = model_path
         self.actor = load_actor_model(self.model_path)
         self.R = RANKS + [RANKS[self.active_level-2]] + ['小王', '大王']
+        self.sug_len = sug_len
 
         # **手牌排序**
         for player in self.players:
@@ -507,7 +526,7 @@ class GuandanGame:
         with torch.no_grad():
             all_probs = self.actor(state_tensor, mask)
 
-        top_k_orig_probs, top_k_indices = torch.topk(all_probs, k=3, dim=-1)
+        top_k_orig_probs, top_k_indices = torch.topk(all_probs, k=self.sug_len, dim=-1)
 
         valid_top_k_probs = top_k_orig_probs[top_k_orig_probs > 0]
         if valid_top_k_probs.numel() > 0:
@@ -529,16 +548,16 @@ class GuandanGame:
                     if action_struct.get('type') == 'None':
                         action_desc = "Pass (不出)"
                         points_str = ""
-                    suggestions.append(f"建议 {i + 1}: {action_desc}-{points_str} - 相对概率: {normalized_prob:.2%}")
+                    suggestions.append(f" {type_to_chinese[action_desc]}-{points_str} - {normalized_prob:.2%}")
                 else:
                     suggestions.append(f"建议 {i + 1}: 未知动作 ID {action_id} - 相对概率: {normalized_prob:.2%}")
             else:
-                suggestions.append(f"建议 {i + 1}:无有效动作")
+                suggestions.append(f"无有效动作")
 
-        while len(suggestions) < 3:
-            suggestions.append("建议: 无可用动作")
+        while len(suggestions) < self.sug_len:
+            suggestions.append("无可用动作")
 
-        return suggestions
+        return list(dict.fromkeys(suggestions))
 
     def check_game_over(self):
         """检查游戏是否结束"""

@@ -1,125 +1,948 @@
-# 2025/3/25 10:58
-import gym
 import numpy as np
 import random
+from collections import defaultdict,Counter
 
-class Player:
-    """玩家类，包含手牌信息"""
-    def __init__(self, hand):
-        self.hand = hand  # 存储玩家手牌
+# 定义牌型
+SUITS = ['黑桃', '红桃', '梅花', '方块']
+RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
 
+# 定义牌的点数
+CARD_RANKS = {
+    '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8,
+    '9': 9, '10': 10, 'J': 11, 'Q': 12, 'K': 13, 'A': 14,
+    '小王': 16, '大王': 17
+}
+
+# 创建两副牌
 def create_deck():
-    """创建两副扑克牌"""
-    suits = ['♠', '♥', '♣', '♦']
-    values = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
-    deck = [suit + value for suit in suits for value in values] * 2  # 2 副牌
+    deck = []
+    for _ in range(2):  # 两副牌
+        for suit in SUITS:
+            for rank in RANKS:
+                card = f"{suit}{rank}"
+                deck.append(card)
+        # 添加大小王
+        deck.append('小王')
+        deck.append('大王')
     return deck
 
+# 洗牌
 def shuffle_deck(deck):
-    """洗牌"""
     random.shuffle(deck)
+    return deck
 
-def deal_cards():
-    """发牌：平均分配给 4 名玩家"""
-    deck = create_deck()
-    shuffle_deck(deck)
-    return [Player(deck[i::4]) for i in range(4)]
+# 发牌
+def deal_cards(deck):
+    players = [[], [], [], []]  # 4个玩家
+    for i in range(len(deck)):
+        players[i % 4].append(deck[i])
+    return players
 
-class GuandanTrainEnv(gym.Env):
-    """掼蛋简化训练环境"""
 
-    def __init__(self):
-        super(GuandanTrainEnv, self).__init__()
-        self.players = deal_cards()  # 发牌
-        self.current_player = 0  # 轮到谁出牌
-        self.ranking = []  # 记录玩家出完牌的顺序
-        self.active_level = None  # 当前级牌
-        self.winning_team = None  # 获胜队伍
-        self.score = 0  # 得分
+# 获取级牌
+def get_level_card(current_round):
+    # 级牌通常是当前局数的数字（如第2局的级牌是2）
+    return str(current_round)
 
-    def reset(self):
-        """重置游戏"""
-        self.active_level = random.choice(['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'])
-        self.players = deal_cards()
-        self.current_player = 0
-        self.ranking = []
-        self.winning_team = None
-        self.score = 0
-        return self._get_obs()
+# 手牌排序（从大到小）
+def sort_cards(cards, level_card=None):
+    def get_card_value(card):
+        if card == '大王':
+            return (CARD_RANKS['大王'], 0)
+        if card == '小王':
+            return (CARD_RANKS['小王'], 0)
+        rank = card[2:] if len(card) > 2 else card[2]  # 处理10以上的牌
+        if level_card and rank == level_card:
+            return (CARD_RANKS['A'] + 1, SUITS.index(card[:2]))  # 级牌仅小于大小王
+        return (CARD_RANKS.get(rank, 0), SUITS.index(card[:2]))
 
-    def _get_obs(self):
-        """获取当前状态（DQN 训练使用）"""
-        obs = np.zeros(3049)  # 示例状态维度，真实实现需要修改
-        return obs
+    return sorted(cards, key=get_card_value, reverse=True)
 
-    def step(self, action):
-        """执行 AI 选择的出牌动作"""
-        self.execute_action(self.current_player, action)  # 处理出牌
-        done = self.check_game_over()
-        reward = self.compute_reward()
-        obs = self._get_obs()
-        return obs, reward, done, {}
+class Rules:
+    def __init__(self, level_card=None):
+        self.level_card = level_card  # 级牌
+        self.CARD_RANKS = {
+            '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8,
+            '9': 9, '10': 10, 'J': 11, 'Q': 12, 'K': 13, 'A': 14,
+            '小王': 16, '大王': 17
+        }
+        self.RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
 
-    def execute_action(self, player_idx, action):
-        """处理出牌逻辑"""
-        player = self.players[player_idx]
+    def is_valid_play(self, cards):
+        """判断出牌是否合法"""
+        if not cards:
+            return False
+        length = len(cards)
 
-        # 确保 action 合法
-        for card in action:
-            if card in player.hand:
-                player.hand.remove(card)
+        if length == 1:
+            return True  # 单张
+        if length == 2:
+            return self.is_pair(cards)  # 对子
+        if length == 3:
+            return self.is_triple(cards)  # 三同张
+        if length == 4:
+            return self.is_king_bomb(cards) or self.is_bomb(cards)  # 天王炸 or 4 炸
+        if length == 5:
+            return self.is_straight(cards) or self.is_flush_straight(cards) or self.is_three_with_two(
+                cards) or self.is_bomb(cards)  # 顺子 / 同花顺 / 三带二
+        if length == 6:
+            return self.is_triple_pair(cards) or self.is_triple_consecutive(cards) or self.is_bomb(cards)  # 连对（木板） / 钢板
+        if 6 < length <= 8:
+            return self.is_bomb(cards)
+        return False  # 其他情况不合法
 
-        # 记录出完牌的玩家
-        if len(player.hand) == 0 and player_idx not in self.ranking:
-            self.ranking.append(player_idx)
+    def is_pair(self, cards):
+        """对子"""
+        return len(cards) == 2 and self.get_rank(cards[0]) == self.get_rank(cards[1])
 
-        # 切换到下一个玩家
+    def is_triple(self, cards):
+        """三同张（三不带）"""
+        return len(cards) == 3 and len(set(self.get_rank(card) for card in cards)) == 1
+
+    def is_three_with_two(self, cards):
+        """三带二"""
+        if len(cards) != 5:
+            return False
+        counts = Counter(self.get_rank(card) for card in cards)
+        return 3 in counts.values() and 2 in counts.values()
+
+    def is_triple_pair(self, cards):
+        """连对（木板），如 556677"""
+        if len(cards) != 6:
+            return False
+
+        # 获取所有牌的点数（去掉花色）
+        ranks = [self.get_rank(card, as_one=False) for card in cards]
+        ranks_as_one = [self.get_rank(card, as_one=True) for card in cards]
+
+        # 统计点数出现次数
+        counts = Counter(ranks)
+        counts_as_one = Counter(ranks_as_one)
+
+        # 获取所有 **点数为 2 的对子**
+        pairs = sorted([rank for rank, count in counts.items() if count == 2])
+        pairs_as_one = sorted([rank for rank, count in counts_as_one.items() if count == 2])
+
+        # 必须有 3 组对子，并且它们的点数是连续的
+        return (len(pairs) == 3 and self._is_consecutive(pairs)) or \
+            (len(pairs_as_one) == 3 and self._is_consecutive(pairs_as_one))
+
+    def is_triple_consecutive(self, cards):
+        """三同连张（钢板），如 555666"""
+        if len(cards) != 6:
+            return False
+
+        # 获取所有牌的点数（去掉花色）
+        ranks = [self.get_rank(card, as_one=False) for card in cards]
+        ranks_as_one = [self.get_rank(card, as_one=True) for card in cards]
+
+        # 统计点数出现次数
+        counts = Counter(ranks)
+        counts_as_one = Counter(ranks_as_one)
+
+        # 获取所有 **点数为 3 的三同张**
+        triples = sorted([rank for rank, count in counts.items() if count == 3])
+        triples_as_one = sorted([rank for rank, count in counts_as_one.items() if count == 3])
+
+        # 必须有 2 组三同张，并且它们的点数是连续的
+        return (len(triples) == 2 and self._is_consecutive(triples)) or \
+            (len(triples_as_one) == 2 and self._is_consecutive(triples_as_one))
+
+    def is_straight(self, cards):
+        """顺子（必须 5 张，A 可作为 1 或 14）"""
+        if len(cards) != 5:
+            return False
+
+        # 获取所有牌的点数（去掉花色）
+        ranks = sorted(self.get_rank(card, as_one=False) for card in cards)
+        ranks_as_one = sorted(self.get_rank(card, as_one=True) for card in cards)
+
+        # 检查 A=1 或 A=14 的情况
+        return self._is_consecutive(ranks) or self._is_consecutive(ranks_as_one)
+
+    def is_flush_straight(self, cards):
+        """同花顺（火箭），如 ♠10JQKA"""
+        if len(cards) != 5:
+            return False
+
+        # 获取所有牌的点数（去掉花色）
+        ranks = sorted(self.get_rank(card, as_one=False) for card in cards)
+        ranks_as_one = sorted(self.get_rank(card, as_one=True) for card in cards)
+
+        # 获取所有牌的花色
+        suits = {card[:2] for card in cards}
+
+        # 需要 **同一花色** 且 **顺序正确**
+        return len(suits) == 1 and (self._is_consecutive(ranks) or self._is_consecutive(ranks_as_one))
+
+    def is_bomb(self, cards):
+        """炸弹（5 张及以上的相同牌 or 4 张相同牌）"""
+        if len(cards) < 4:
+            return False
+        ranks = [self.get_rank(card) for card in cards]
+        return len(set(ranks)) == 1
+
+
+    def is_king_bomb(self, cards):
+        """四大天王（天王炸）"""
+        return sorted(cards) == ['大王', '大王', '小王', '小王']
+
+    def get_rank(self, card, as_one=False):
+        """获取牌的点数，支持 A=1"""
+        if card in ['小王', '大王']:
+            return CARD_RANKS[card]
+
+        rank = card[2:] if len(card) > 2 else card[2]  # 解析点数
+
+        # **只检查当前局的级牌**
+        if rank == RANKS[self.level_card - 2]:
+            return CARD_RANKS['A'] + 1  # 级牌比 A 还大
+
+        if as_one and rank == 'A':
+            return 1  # A 作为 1
+
+        return CARD_RANKS.get(rank, 0)
+
+    def _is_consecutive(self, ranks):
+        """判断是否为连续数字序列"""
+        return all(ranks[i] == ranks[i - 1] + 1 for i in range(1, len(ranks)))
+
+    def can_beat(self, previous_play, current_play):
+        """判断当前出牌是否能压过上家"""
+        if not self.is_valid_play(current_play):
+            return False
+        if not previous_play:
+            return True  # 没人出牌，可以随便出
+
+        prev_type = self.get_play_type(previous_play)
+        curr_type = self.get_play_type(current_play)
+
+
+        # **修正炸弹牌力顺序**
+        bomb_order = ['天王炸', '8炸', '7炸', '6炸', '同花顺', '5炸', '4炸']
+
+        # **炸弹能压制非炸弹**
+        if curr_type in bomb_order and prev_type not in bomb_order:
+            return True
+        if prev_type in bomb_order and curr_type in bomb_order:
+            return bomb_order.index(curr_type) < bomb_order.index(prev_type)
+
+        # **牌型必须相同才能比较**
+        if prev_type != curr_type:
+            return False
+
+        return self.get_play_value(current_play) > self.get_play_value(previous_play)
+
+    def get_play_type(self, cards):
+        """获取牌型"""
+        if self.is_king_bomb(cards):
+            return '天王炸'
+        if self.is_flush_straight(cards):
+            return '同花顺'
+        if self.is_bomb(cards):
+            size = len(cards)
+            if size == 4:
+                return '4炸'
+            elif size == 5:
+                return '5炸'
+            elif size == 6:
+                return '6炸'
+            elif size == 7:
+                return '7炸'
+            elif size == 8:
+                return '8炸'
+        if self.is_triple_consecutive(cards):
+            return '钢板'
+        if self.is_triple_pair(cards):
+            return '木板'
+        if self.is_three_with_two(cards):
+            return '三带二'
+        if self.is_triple(cards):
+            return '三同张'
+        if self.is_straight(cards):
+            return '顺子'
+        if self.is_pair(cards):
+            return '对子'
+        if len(cards) == 1:
+            return '单牌'
+        return '非法牌型'
+
+    def get_play_value(self, cards):
+        """获取牌点数"""
+        ranks = [self.get_rank(card) for card in cards]
+        return max(ranks)
+
+
+
+
+# 2025/4/17 10:22
+from collections import defaultdict
+from itertools import combinations, product
+RANK_STR = {v: k for k, v in CARD_RANKS.items()}
+
+def parse_hand(hand):
+    """将手牌转换为点数到花色牌组的映射"""
+    point_to_cards = defaultdict(list)
+    for card in hand:
+        for rank in RANKS + ['小王', '大王']:
+            if rank in card:
+                point = CARD_RANKS[rank]
+                point_to_cards[point].append(card)
+                break
+    return point_to_cards
+
+def find_combinations(points, point_to_cards):
+    """递归回溯地找出所有不重复使用牌的组合（通过索引区分同名牌）"""
+    results = []
+
+    card_pool = []  # (point, card) 的列表
+    card_to_idx = {}  # point ➔ 对应的全局 idx 列表
+    idx = 0
+    for p, cards in point_to_cards.items():
+        for c in cards:
+            card_pool.append((p, c))
+            card_to_idx.setdefault(p, []).append(idx)
+            idx += 1  # 全局编号递增
+
+    def backtrack(index, path, used_idx):
+        if index == len(points):
+            results.append([card_pool[i][1] for i in path])  # 只保留牌面
+            return
+        p = points[index]
+        available = [i for i in card_to_idx.get(p, []) if i not in used_idx]
+        if not available:
+            return  # ❌ 找不到需要的牌直接剪枝
+        for i in available:
+            used_idx.add(i)
+            path.append(i)
+            backtrack(index + 1, path, used_idx)
+            path.pop()
+            used_idx.remove(i)
+
+    backtrack(0, [], set())
+    return results
+
+def parse_hand_with_level(hand, level_rank: int):
+    """
+    将手牌转换为 point_to_cards 映射：
+    - 如果是级牌（点数 == level_rank），在逻辑上映射为 15 点
+    """
+    point_to_cards = defaultdict(list)
+    for card in hand:
+        for rank in RANKS + ['小王', '大王']:
+            if rank in card:
+                raw_point = CARD_RANKS[rank]
+                logic_point = 15 if raw_point == level_rank else raw_point
+                point_to_cards[logic_point].append(card)
+                break
+    return point_to_cards
+
+def group_points(points):
+    counts = defaultdict(int)
+    for p in points:
+        counts[p] += 1
+    return dict(counts)
+
+def match_structured_action(points, point_to_cards):
+    grouped = group_points(points)
+    group_by_count = defaultdict(list)
+    for pt, cnt in grouped.items():
+        group_by_count[cnt].append(pt)
+
+    all_combos = []
+
+    # ✅ 三带二：3+2
+    if set(grouped.values()) == {3, 2} and len(grouped) == 2:
+        triples = group_by_count[3]
+        pairs = group_by_count[2]
+        for triple_point in triples:
+            for triple_cards in combinations(point_to_cards.get(triple_point, []), 3):
+                for pair_point in pairs:
+                    if pair_point == triple_point:
+                        continue
+                    for pair_cards in combinations(point_to_cards.get(pair_point, []), 2):
+                        all_combos.append(list(triple_cards) + list(pair_cards))
+
+    # ✅ 连对：3个连续点数，每个2张（如 334455）
+    elif all(cnt == 2 for cnt in grouped.values()) and len(grouped) >= 3:
+        seq = sorted(grouped.keys())
+        if all(seq[i+1] - seq[i] == 1 for i in range(len(seq) - 1)):
+            pair_options = []
+            for pt in seq:
+                pair_options.append(list(combinations(point_to_cards.get(pt, []), 2)))
+            for pairs in product(*pair_options):
+                combo = [card for pair in pairs for card in pair]
+                all_combos.append(combo)
+
+    # ✅ 钢板：2个连续点数，每个3张（如 555666）
+    elif all(cnt == 3 for cnt in grouped.values()) and len(grouped) == 2:
+        seq = sorted(grouped.keys())
+        if seq[1] - seq[0] == 1:
+            triple_options = []
+            for pt in seq:
+                triple_options.append(list(combinations(point_to_cards.get(pt, []), 3)))
+            for triples in product(*triple_options):
+                combo = [card for trip in triples for card in trip]
+                all_combos.append(combo)
+
+    return all_combos
+
+def enumerate_colorful_actions(action, hand, level_rank: int):
+    point_to_cards = parse_hand_with_level(hand, level_rank)
+    raw_combos = []
+
+    # 特判结构型牌型（三带二）
+    structured_combos = match_structured_action(action['points'], point_to_cards)
+    raw_combos.extend(structured_combos)
+
+    # 普通动作（顺子/对子等）
+    if not structured_combos:
+        raw_combos = find_combinations(action['points'], point_to_cards)
+
+    if action['type'] == 'flush_rocket':
+        filtered_combos = []
+        for combo in raw_combos:
+            suits = [card[:2] for card in combo]
+            if all(s == suits[0] for s in suits):  # 花色必须完全一致
+                filtered_combos.append(combo)
+        raw_combos = filtered_combos
+
+    # 去重
+    seen = set()
+    unique_combos = []
+    for combo in raw_combos:
+        key = frozenset(combo)
+        if key not in seen:
+            seen.add(key)
+            unique_combos.append(combo)
+    return unique_combos
+
+def build_card_index_map():
+    index_map = {}
+    idx = 0
+    for copy in range(2):
+        for suit in ['黑桃', '红桃', '梅花', '方块']:
+            for rank in ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']:
+                card = f"{suit}{rank}"
+                if card not in index_map:
+                    index_map[card] = []
+                index_map[card].append(idx)
+                idx += 1
+    for copy in range(2):
+        index_map.setdefault('小王', []).append(idx)
+        idx += 1
+        index_map.setdefault('大王', []).append(idx)
+        idx += 1
+    return index_map
+
+def encode_hand_108(hand):
+    card_map = build_card_index_map()
+    obs = np.zeros(108)
+    if hand == ['Pass'] or hand == ['None'] or not hand:
+        hand = []
+
+    card_count = {}
+    for card in hand:
+        card_count[card] = card_count.get(card, 0) + 1
+
+    for card, count in card_count.items():
+        indices = card_map.get(card, [])
+        for i in range(min(count, len(indices))):
+            obs[indices[i]] = 1.0
+    return obs
+
+
+class Player:
+    def __init__(self, hand):
+        """
+        程序里的玩家是从0开始的，输出时会+1
+        """
+        self.hand = hand  # 手牌
+        self.played_cards = []  # 记录已出的牌
+        self.last_played_cards = []
+
+class GuandanGame:
+    def __init__(self, user_player=None, active_level=None,verbose=True , print_history=False):
+        # **两队各自的级牌**
+        self.print_history = print_history
+        self.active_level = active_level if active_level else random.choice(range(2, 15))
+        # 历史记录，记录最近 20 轮的出牌情况（每轮包含 4 个玩家的出牌）
+        self.history = []
+        # **只传当前局的有效级牌**
+        self.rules = Rules(self.active_level)
+        self.players = [Player(hand) for hand in deal_cards(shuffle_deck(create_deck()))]# 发牌
+        self.current_player = 0  # 当前出牌玩家
+        self.last_play = None  # 记录上一手牌
+        self.last_player = -1  # 记录上一手是谁出的
+        self.pass_count = 0  # 记录连续 Pass 的次数
+        self.user_player = user_player - 1 if user_player else None  # 转换为索引（0~3）
+        self.ranking = []  # 存储出完牌的顺序
+        self.recent_actions = [[],[],[],[]]
+        self.verbose = verbose  # 控制是否输出文本
+        self.team_1 = {0, 2}
+        self.team_2 = {1, 3}
+        self.is_free_turn=True
+        self.jiefeng = False
+        self.winning_team = 0
+        self.is_game_over = False
+        self.upgrade_amount = 0
+
+        # **手牌排序**
+        for player in self.players:
+            player.hand = self.sort_cards(player.hand)
+
+    def log(self, message):
+        """控制是否打印消息"""
+        if self.verbose:
+            print(message)
+
+    def sort_cards(self, cards):
+        """按牌的大小排序（从大到小）"""
+        return sorted(cards, key=lambda card: self.rules.get_rank(card), reverse=True)
+
+    def map_cards_to_action(self,cards, M, level_rank):
+        """
+        从实际出过的牌中（带花色），判断其结构动作（含同花顺识别）。
+        """
+        point_count = defaultdict(int)
+        suits = set()
+
+        for card in cards:
+            for rank in RANKS + ['小王', '大王']:
+                if rank in card:
+                    raw_point = CARD_RANKS[rank]
+                    logic_point = 15 if raw_point == level_rank else raw_point
+                    point_count[logic_point] += 1
+                    break
+            # 提取花色
+            for s in SUITS:
+                if card.startswith(s):
+                    suits.add(s)
+                    break
+
+        # 构建点数序列（带重复）
+        logic_points = []
+        for pt, count in sorted(point_count.items()):
+            logic_points.extend([pt] * count)
+
+        # 🔍 同花顺检测
+        if len(cards) == 5 and len(point_count) == 5:
+            sorted_points = sorted(point_count.keys())
+            if all(sorted_points[i + 1] - sorted_points[i] == 1 for i in range(4)):
+                if len(suits) == 1:
+                    # 是同花顺 → 去 M 中找类型为 straight_flush
+                    for action in M:
+                        if action['type'] == 'flush_rocket' and sorted(action['points']) == sorted_points:
+                            return action
+
+        # 🔁 普通结构匹配
+        for action in M:
+            if sorted(action['points']) == sorted(logic_points):
+                return action
+
+        return None
+
+    def play_turn(self):
+        """执行当前玩家的回合"""
+
+        player = self.players[self.current_player]  # 获取当前玩家对象
+
+        # **计算当前仍有手牌的玩家数**
+        active_players = 4-len(self.ranking)
+
+        # **如果 Pass 的人 == "当前有手牌的玩家数 - 1"，就重置轮次**
+        if self.pass_count >= (active_players - 1) and self.current_player not in self.ranking:
+            if self.jiefeng:
+                first_player = self.ranking[-1]
+                teammate = 2 if first_player == 0 else 0 if first_player == 2 else 3 if first_player == 1 else 1
+                self.log(f"\n🆕 轮次重置！玩家 {teammate + 1} 接风。\n")
+                self.recent_actions[self.current_player] = []  # 记录空列表
+                self.current_player = (self.current_player + 1) % 4
+                self.last_play = None  # ✅ 允许新的自由出牌
+                self.pass_count = 0  # ✅ Pass 计数归零
+                self.is_free_turn = True
+                self.jiefeng = False
+            else:
+                self.log(f"\n🆕 轮次重置！玩家 {self.current_player + 1} 可以自由出牌。\n")
+                self.last_play = None  # ✅ 允许新的自由出牌
+                self.pass_count = 0  # ✅ Pass 计数归零
+                self.is_free_turn = True
+
+        result = self.ai_play(player)
+        # **记录最近 5 轮历史**
+        if self.current_player == 0:
+            round_history = [self.recent_actions[i] for i in range(4)]
+            self.history.append(round_history)
+            self.recent_actions=[['None'],['None'],['None'],['None']]
+            '''
+            if len(self.history) > 20:
+                self.history.pop(0)
+            '''
+        return result
+
+    def get_possible_moves(self, player_hand):
+        """获取所有可能的合法出牌，包括顺子（5 张）、连对（aabbcc）、钢板（aaabbb）"""
+
+        possible_moves = []
+        hand_points = [self.rules.get_rank(card) for card in player_hand]  # 仅点数（去掉花色）
+        hand_counter = Counter(hand_points)  # 统计点数出现次数
+        unique_points = sorted(set(hand_points))  # 仅保留唯一点数，排序
+
+        # 1. **原逻辑（单张、对子、三条、炸弹等）**
+        for size in [1, 2, 3, 4, 5, 6, 7, 8]:
+            for i in range(len(player_hand) - size + 1):
+                move = player_hand[i:i + size]
+                if self.rules.can_beat(self.last_play, move):
+                    possible_moves.append(move)
+
+        # 2. **检查顺子（固定 5 张）**
+        for i in range(len(unique_points) - 4):  # 只找长度=5 的顺子
+            seq = unique_points[i:i + 5]
+            if self.rules._is_consecutive(seq) and 15 not in seq:  # 不能有大小王
+                move = self._map_back_to_suit(seq, player_hand)  # 还原带花色的牌
+                if self.rules.can_beat(self.last_play, move):
+                    possible_moves.append(move)
+
+        # 3. **检查连对（aabbcc）**
+        for i in range(len(unique_points) - 2):  # 只找 3 组对子
+            seq = unique_points[i:i + 3]
+            if all(hand_counter[p] >= 2 for p in seq):  # 每张至少两张
+                move = self._map_back_to_suit(seq, player_hand, count=2)  # 每点数取 2 张
+                if self.rules.can_beat(self.last_play, move):
+                    possible_moves.append(move)
+
+        # 4. **检查钢板（aaabbb）**
+        for i in range(len(unique_points) - 1):  # 只找 2 组三张
+            seq = unique_points[i:i + 2]
+            if all(hand_counter[p] >= 3 for p in seq):  # 每张至少 3 张
+                move = self._map_back_to_suit(seq, player_hand, count=3)  # 每点数取 3 张
+                if self.rules.can_beat(self.last_play, move):
+                    possible_moves.append(move)
+
+        return possible_moves
+
+    def _map_back_to_suit(self, seq, sorted_hand, count=1):
+        """从手牌映射回带花色的牌"""
+        move = []
+        hand_copy = sorted_hand[:]  # 复制手牌
+        for p in seq:
+            for _ in range(count):  # 取 count 张
+                for card in hand_copy:
+                    if self.rules.get_rank(card) == p:
+                        move.append(card)
+                        hand_copy.remove(card)
+                        break
+        return move
+
+    def can_beat(self,curr_action, prev_action):
+        """
+        判断结构动作 curr_action 是否能压过 prev_action
+        """
+        # 如果没人出牌，当前动作永远可以出
+        if prev_action["type"] == "None":
+            if curr_action["type"] == "None":
+                return False
+            else:
+                return True
+
+        curr_type = curr_action["type"]
+        prev_type = prev_action["type"]
+
+        # 炸弹类型（根据牌力表）
+        bomb_power = {
+            "joker_bomb": 6,
+            "8_bomb": 5,
+            "7_bomb": 4,
+            "6_bomb": 3,
+            "flush_rocket": 2,
+            "5_bomb": 1,
+            "4_bomb": 0
+        }
+
+        is_curr_bomb = curr_type in bomb_power
+        is_prev_bomb = prev_type in bomb_power
+
+        # ✅ 炸弹能压非炸弹
+        if is_curr_bomb and not is_prev_bomb:
+            return True
+        if not is_curr_bomb and is_prev_bomb:
+            return False
+
+        # ✅ 两个都是炸弹 → 比炸弹牌力 → 再比 logic_point
+        if is_curr_bomb and is_prev_bomb:
+            if bomb_power[curr_type] > bomb_power[prev_type]:
+                return True
+            elif bomb_power[curr_type] < bomb_power[prev_type]:
+                return False
+            else:  # 相同牌力 → 比点数
+                return curr_action["logic_point"] > prev_action["logic_point"]
+
+        # ✅ 非炸弹时，牌型必须相同才可比
+        if curr_type != prev_type:
+            return False
+
+        # ✅ 非炸弹，牌型相同 → 比 logic_point
+        return curr_action["logic_point"] > prev_action["logic_point"]
+
+    def get_valid_action_mask(self,hand, M, level_rank, last_action):
+        """
+        返回 mask 向量，标记每个结构动作在当前手牌下是否合法。
+        如果 last_action 为 None，则为主动出牌，可出任意合法牌型；
+        否则为跟牌回合，只能出能压过 last_action 的合法牌。
+        """
+        mask = np.zeros(len(M), dtype=np.float32)
+        if not last_action:
+            last_action = []
+        last_action = self.map_cards_to_action(last_action, M, level_rank)
+        for action in M:
+            action_id = action['id']
+            combos = enumerate_colorful_actions(action, hand, level_rank)
+            if not combos:
+                continue  # 当前手牌无法组成该结构
+
+            if last_action is None:
+                # 主动出牌：只要能组成即可
+                mask[action_id] = 1.0
+            else:
+                # 跟牌出牌：还要能压上上家
+                if self.can_beat(action, last_action):
+                    mask[action_id] = 1.0
+        if not self.is_free_turn:
+            # 永远允许出 “None” 结构（pass）
+            mask[0] = 1.0
+
+        return mask
+
+    def ai_play(self, player):
+        """AI 出牌逻辑（随机选择合法且能压过上家的出牌）"""
+
+        # **如果玩家已经打完，仍然记录一个空列表，然后跳过**
+        if self.current_player in self.ranking:
+            self.recent_actions[self.current_player] = []  # 记录空列表
+            self.current_player = (self.current_player + 1) % 4
+
+            return self.check_game_over()
+
+        player_hand = player.hand
+
+        possible_moves = self.get_possible_moves(player_hand)
+        if not self.is_free_turn:
+            possible_moves.append([])
+
+        if not possible_moves:
+            self.log(f"玩家 {self.current_player + 1} Pass")
+            self.pass_count += 1
+            self.recent_actions[self.current_player] = ['Pass']  # 记录 Pass
+        else:
+            chosen_move = random.choice(possible_moves) # 随机选择一个合法的牌型
+            if not chosen_move:
+                self.log(f"玩家 {self.current_player + 1} Pass")
+                self.pass_count += 1
+                self.recent_actions[self.current_player] = ['Pass']  # 记录 Pass
+            else:
+                # 如果 chosen_move 不为空，继续进行正常的出牌逻辑
+                self.last_play = chosen_move
+                self.last_player = self.current_player
+                for card in chosen_move:
+                    player.played_cards.append(card)
+                    player_hand.remove(card)
+                self.log(f"玩家 {self.current_player + 1} 出牌: {' '.join(chosen_move)}")
+                self.recent_actions[self.current_player] = list(chosen_move)  # 记录出牌
+                self.jiefeng = False
+                if not player_hand:  # 玩家出完牌
+                    self.log(f"\n🎉 玩家 {self.current_player + 1} 出完所有牌！\n")
+                    self.ranking.append(self.current_player)
+                    if len(self.ranking)<=2:
+                        self.jiefeng=True
+
+                self.pass_count = 0
+                if not player_hand:
+                    self.pass_count -= 1
+
+                if self.is_free_turn:
+                    self.is_free_turn = False
+
+        player.last_played_cards = self.recent_actions[self.current_player]
         self.current_player = (self.current_player + 1) % 4
+        return self.check_game_over()
 
     def check_game_over(self):
-        """检查游戏是否结束（3 人出完牌）"""
-        if len(self.ranking) < 3:
-            return False  # 还没 3 个人出完牌，游戏继续
+        """检查游戏是否结束"""
+        # **如果有 2 个人出完牌，并且他们是同一队伍，游戏立即结束**
+        if len(self.ranking) >= 2:
+            first_player, second_player = self.ranking[0], self.ranking[1]
+            if (first_player in self.team_1 and second_player in self.team_1) or (
+                    first_player in self.team_2 and second_player in self.team_2):
+                self.ranking.extend(i for i in range(4) if i not in self.ranking)  # 剩下的按出牌顺序补全
+                self.update_level()
+                self.is_game_over = True
+                return True
 
-        first_player = self.ranking[0]  # 第一个出完牌的玩家
-        team = [first_player, (first_player + 2) % 4]  # 确定队友（0&2，1&3）
+        # **如果 3 人出完了，自动补全最后一名，游戏结束**
+        if len(self.ranking) == 3:
+            self.ranking.append(next(i for i in range(4) if i not in self.ranking))  # 找出最后一个玩家
+            self.update_level()
+            self.is_game_over = True
+            return True
 
-        # 检查队友名次
-        teammate_rank = None
+        return False
+
+    def update_level(self):
+        """升级级牌"""
+        first_player = self.ranking[0]  # 第一个打完牌的玩家
+        winning_team = 1 if first_player in self.team_1 else 2
+        self.winning_team = winning_team
+        # 确定队友
+        teammate = 2 if first_player == 0 else 0 if first_player == 2 else 3 if first_player == 1 else 1
+
+        # 找到队友在排名中的位置
+        teammate_position = self.ranking.index(teammate)
+
+        # 头游 + 队友的名次，确定得分
+        upgrade_map = {1: 3, 2: 2, 3: 1}  # 头游 + (队友的名次) 对应的升级规则
+        upgrade_amount = upgrade_map[teammate_position]
+        self.upgrade_amount=upgrade_amount
+
+        self.log(f"\n🏆 {winning_team} 号队伍获胜！得 {upgrade_amount} 分")
+        # 显示最终排名
+        ranks = ["头游", "二游", "三游", "末游"]
         for i, player in enumerate(self.ranking):
-            if player in team:
-                teammate_rank = i + 1  # 排名从 1 开始
+            self.log(f"{ranks[i]}：玩家 {player + 1}")
+
+    def play_game(self):
+        """执行一整局游戏"""
+        self.log(f"\n🎮 游戏开始！当前级牌：{RANKS[self.active_level - 2]}")
+
+        while True:
+            if self.play_turn():
+                if self.current_player != 0:
+                    round_history = [self.recent_actions[i] for i in range(4)]
+                    self.history.append(round_history)
+                if self.print_history:
+                    for i in range(len(self.history)):
+                        self.log(self.history[i])
                 break
 
-        # 计算得分
-        if teammate_rank == 4:
-            self.score = 1
-        elif teammate_rank == 3:
-            self.score = 2
-        elif teammate_rank == 2:
-            self.score = 3
-            return True  # 提前结束游戏（同队玩家都出完）
+    def show_user_hand(self):
+        """显示用户手牌（按排序后的顺序）"""
+        sorted_hand = self.players[self.user_player].hand
+        print("\n你的手牌：", " ".join(sorted_hand))
+        if self.last_play:
+            print(f"场上最新出牌：{' '.join(self.last_play)}\n")
 
-        return len(self.ranking) == 3  # 3 人出完牌，游戏结束
+    def _get_obs(self):
+        """
+        构造状态向量，总共 3049 维
+        """
+        obs = np.zeros(3049)
+
+        # 1️⃣ 当前玩家手牌 (108)
+        obs[:108]=encode_hand_108(self.players[self.current_player].hand)
+        offset = 108
+
+        # 2️⃣ 其他玩家手牌数量 (3)
+        for i, player in enumerate(self.players):
+            if i != self.current_player:
+                obs[offset + i] = min(len(player.hand), 26) / 26.0
+        offset += 3
+
+        # 3️⃣ 最近动作 (108 * 4 = 432)
+        for i, player in enumerate(self.players):
+            obs[offset + i * 108 : offset + (i + 1) * 108] = encode_hand_108(player.last_played_cards)
+        offset += 108 * 4
+
+        # 4️⃣ 其他玩家已出牌 (108 * 3 = 324)
+        for i, player in enumerate(self.players):
+            if i != self.current_player:
+                obs[offset + i * 108 : offset + (i + 1) * 108] = encode_hand_108(player.played_cards)
+        offset += 108 * 3
+
+        # 5️⃣ 当前级牌 (13)
+        obs[offset + self.level_card_to_index(self.active_level)] = 1
+        offset += 13
+
+        # 6️⃣ 最近 20 步动作历史 (108 * 20 = 2160)
+        HISTORY_LEN = 20
+        history_flat = []
+
+        # 展平所有轮次中的动作
+        for round in self.history:
+            for action in round:
+                history_flat.append(action)
+
+        # 若不满 20，则在最前补空动作（表示“没人出牌”）
+        while len(history_flat) < HISTORY_LEN:
+            history_flat.insert(0, [])  # 用空动作填充
+
+        # 取最后 20 个动作
+        history_flat = history_flat[-HISTORY_LEN:]
+
+        # 编码入 obs
+        for i, action in enumerate(history_flat):
+            start = offset + i * 108
+            obs[start:start + 108] = encode_hand_108(action)
+        offset += 108 * HISTORY_LEN
+
+        # 7️⃣ 状态向量 (9)
+        obs[offset:offset + 3] = self.compute_coop_status()
+        obs[offset + 3:offset + 6] = self.compute_dwarf_status()
+        obs[offset + 6:offset + 9] = self.compute_assist_status()
+        offset += 9
+
+        assert offset == 3049, f"⚠️ offset 计算错误: 预期 3049, 实际 {offset}"
+        return obs
+
 
     def compute_reward(self):
-        """计算奖励：
-        - 胜利队伍: 100 + self.score * 10
-        - 失败队伍: -100
-        - 牌越少，奖励越高
+        """计算当前的奖励"""
+        if self.check_game_over():
+            # 如果游戏结束，给胜利队伍正奖励，失败队伍负奖励
+            return 100 if self.current_player in self.winning_team else -100
+
+        # **鼓励 AI 先出完手牌**
+        hand_size = len(self.players[self.current_player].hand)
+        return -hand_size  # 手牌越少，奖励越高
+
+    def card_to_index(self, card):
         """
-        if not self.check_game_over():
-            return -len(self.players[self.current_player].hand)  # 鼓励早点出牌
+        牌面转换为索引
+        """
+        card_map = {card: i for i, card in enumerate(self.rules.CARD_RANKS.keys())}
+        return card_map.get(card, 0)
 
-        return (100 + self.score * 10) if self.current_player in self.winning_team else -100
+    def level_card_to_index(self, level_card):
+        """
+        级牌转换为 one-hot 索引 (2 -> 0, 3 -> 1, ..., A -> 12)
+        """
+        levels = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
+        return levels.index(str(level_card)) if str(level_card) in levels else 0
 
-    def ai_play(self, player_idx):
-        """AI 出牌逻辑（随机出牌或 DQN 选择动作）"""
-        player_hand = self.players[player_idx].hand
-        if not player_hand:
-            return []  # 没牌可出
+    def compute_coop_status(self):
+        """
+        计算协作状态：
+        [1, 0, 0] -> 不能协作
+        [0, 1, 0] -> 选择协作
+        [0, 0, 1] -> 拒绝协作
+        """
+        return [1, 0, 0]  # 目前默认"不能协作"，后续可修改逻辑
 
-        # 随机选择 1-5 张牌出
-        move_size = random.randint(1, min(5, len(player_hand)))
-        move = random.sample(player_hand, move_size)
-        return move
+    def compute_dwarf_status(self):
+        """
+        计算压制状态：
+        [1, 0, 0] -> 不能压制
+        [0, 1, 0] -> 选择压制
+        [0, 0, 1] -> 拒绝压制
+        """
+        return [1, 0, 0]  # 目前默认"不能压制"，后续可修改逻辑
+
+    def compute_assist_status(self):
+        """
+        计算辅助状态：
+        [1, 0, 0] -> 不能辅助
+        [0, 1, 0] -> 选择辅助
+        [0, 0, 1] -> 拒绝辅助
+        """
+        return [1, 0, 0]  # 目前默认"不能辅助"，后续可修改逻辑
+if __name__ == "__main__":
+    game = GuandanGame(user_player=None)
+    game.play_game()

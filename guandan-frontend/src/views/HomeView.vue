@@ -24,17 +24,31 @@
         </select>
       </div>
 
-      <div class="form-group">
-        <label>起始位置</label>
-        <select 
-          v-model="selectedPosition"
-          class="styled-select"
-        >
-          <option v-for="n in 4" :value="n - 1">
-            座位 {{ n }} 
-            <span v-if="n === 1">(庄家)</span>
-          </option>
-        </select>
+      <div class="form-row">
+        <div class="form-group" style="flex: 1; margin-right: 15px;">
+          <label>建议长度</label>
+          <select 
+            v-model="selectedSugLen"
+            class="styled-select"
+          >
+            <option v-for="n in [3,4,5,6]" :value="n">
+              {{ n }} 
+            </option>
+          </select>
+        </div>
+
+        <div class="form-group" style="flex: 1;">
+          <label>起始位置</label>
+          <select 
+            v-model="selectedPosition"
+            class="styled-select"
+          >
+            <option v-for="n in 4" :value="n - 1">
+              座位 {{ n }} 
+              <span v-if="n === 1">(庄家)</span>
+            </option>
+          </select>
+        </div>
       </div>
 
       <div class="button-group">
@@ -62,6 +76,7 @@ const router = useRouter()
 const availableModels = ref<string[]>([])
 const selectedModel = ref<string>('')
 const selectedPosition = ref(0)
+const selectedSugLen = ref(3)
 
 onMounted(async () => {
   try {
@@ -126,7 +141,8 @@ const startSolo = async () => {
       {
         model: selectedModel.value,
         position: position,  // 使用转换后的数字
-        user_id: store.userId
+        user_id: store.userId,
+        sug_len: selectedSugLen.value,
       },
       {
         headers: { 
@@ -178,6 +194,13 @@ const goToLobby = () => {
   margin-bottom: 0.5rem;
 }
 
+.form-row {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 1.8rem;
+  margin-bottom: 1.8rem;
+}
+
 .subtitle {
   font-size: 1.1rem;
   color: #666;
@@ -191,7 +214,7 @@ const goToLobby = () => {
 }
 
 .form-group {
-  margin-bottom: 2.2rem !important;
+  margin-bottom: 0; /* 因为外层已经有margin-bottom了 */
 }
 
 .form-group label {

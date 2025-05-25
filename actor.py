@@ -229,19 +229,19 @@ def run_training(episodes=1000):
                 if 0 < action_id <= 48:# 出单牌、对子、三张
                     if (any(mask1[i] and not mask2[i] for i in range(49, 120)) or
                             any(mask1[i] and not mask2[i] for i in range(330, 375))):# 拆了炸、顺子、连对
-                        reward -= 0.8
+                        reward -= 2
                 elif 120 <= action_id < 330:# 出三带二，对子拆了炸
                     side_point = entry['points'][-1]
                     if 2 <= side_point <= 15:
                         # TODO: 判断拆顺子、连对
                         if any(mask1[side_point + 47 + 14 * i] and not mask2[side_point + 47 + 14 * i] for i in range(5)):
-                            reward -= 0.8
+                            reward -= 1.8
                     else:
                         if mask1[119] and not mask2[119]:
-                            reward -= 0.8
+                            reward -= 1.8
                 elif 330 <= action_id < 375:
                     if any(mask1[i] and not mask2[i] for i in range(49, 120)):# 拆了炸
-                        reward -= 0.8
+                        reward -= 1.8
 
                 memory.append({"state": state, "action_id": action_id, "reward": reward})
                 player.last_played_cards = game.recent_actions[game.current_player]

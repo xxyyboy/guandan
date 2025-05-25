@@ -24,8 +24,7 @@ def list_models():
     model_dir = os.path.join(current_dir, "..", "models")     # 拼接模型目录
     # print("📂 模型目录：", model_dir)
     try:
-        models = [f for f in os.listdir(model_dir)
-                  if f.endswith(".pth") and (f.startswith("a") or f.startswith("s"))]
+        models = [f for f in os.listdir(model_dir) if not f.startswith("c")]
         models.sort(key=lambda x: 0 if x == "show2.pth" else 1)
         # print("📂 可用模型列表：", models)
         return JSONResponse(content={"models": models})
@@ -39,6 +38,7 @@ class SoloGameConfig(BaseModel):
     model: str
     position: int
     user_id: str
+    sug_len: int = 3
 
 @app.post("/create_solo_game")
 def create_solo_game(config: SoloGameConfig):
@@ -46,7 +46,8 @@ def create_solo_game(config: SoloGameConfig):
     game = GuandanGame(
         user_player=int(config.position),  # 强制转换为整数
         verbose=False,
-        model_path=os.path.join("models", config.model)
+        model_path=os.path.join("models", config.model),
+        sug_len=config.sug_len
     )
     print(f"游戏初始化完成: user_player={game.user_player}")  # 验证
     solo_sessions[config.user_id] = game

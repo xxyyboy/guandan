@@ -30,7 +30,7 @@ if st.session_state.page == "setup":
     st.markdown(">推荐使用`show`开头版本")
 
     model_dir = "models"
-    available_models = [f for f in os.listdir(model_dir) if f.endswith(".pth") and (f.startswith("a") or f.startswith("s"))]
+    available_models = [f for f in os.listdir(model_dir) if f.endswith(".pth") and (not f.startswith("c"))]
 
     default_model = "show2.pth"
     if default_model in available_models:
@@ -38,15 +38,18 @@ if st.session_state.page == "setup":
         available_models.insert(0, default_model)
 
     selected_model = st.selectbox("请选择模型：", available_models, key="model_select")
+    sug_len = st.selectbox("建议个数",[3,4,5,6],key="sug_select")
     selected_position = st.selectbox("你的位置（玩家号）：", [1, 2, 3, 4], index=0, key="position_select")
 
     if st.button("✅ 确认设置并开始游戏"):
         st.session_state.selected_model = selected_model
+        st.session_state.sug_len = sug_len
         st.session_state.selected_position = selected_position
         selected_model_path = os.path.join(model_dir, selected_model)
         st.session_state.game = GuandanGame(
             user_player=selected_position,
-            verbose=False,model_path=selected_model_path)
+            verbose=False,model_path=selected_model_path,
+            sug_len=sug_len,)
         st.session_state.selected_indices = []
         st.session_state.page = "main"
         st.rerun()
@@ -288,7 +291,7 @@ elif st.session_state.page == "main":
             </a>
             """
             st.markdown(github_html, unsafe_allow_html=True)
-            st.markdown('![Static Badge](https://img.shields.io/badge/ver.-1.2.3-E85889)')
+            st.markdown('![Static Badge](https://img.shields.io/badge/ver.-1.4.0-E85889)')
         # 显示级牌
         st.markdown(f"""
             <div style="display: flex; gap: 20px; align-items: center; margin-bottom: 15px;">

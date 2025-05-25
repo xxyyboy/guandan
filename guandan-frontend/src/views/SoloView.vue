@@ -29,7 +29,7 @@
 
         <!-- AI建议与上次出牌 -->
         <div class="ai-suggestion-container">
-          <div class="suggestion-section">
+          <div class="suggestion-section" :class="{ 'two-columns': shouldUseTwoColumns }">
             <h3>🤖 AI建议：</h3>
             <ul>
               <li v-for="(sug, i) in gameData.ai_suggestions" :key="i">{{ sug }}</li>
@@ -109,7 +109,7 @@
             <img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/github/github-original.svg" width="20">
             <span>查看项目仓库</span>
           </a>
-          <div class="badge">ver. 1.3.0</div>
+          <div class="badge">ver. 1.4.0</div>
         </div>
 
         <!-- 当前状态 -->
@@ -182,23 +182,41 @@ const refreshState = async () => {
 
 // 自动推进游戏
 const autoAdvanceGame = async () => {
-  if (isAutoPlaying.value || !gameData.value?.current_player) return;
+  if (isAutoPlaying.value || !gameData.value) return;
   
   isAutoPlaying.value = true;
   try {
+    // 添加最大尝试次数防止死循环
+    let maxAttempts = 20;
+    let attempts = 0;
+    
     while (
       !gameData.value.is_game_over && 
-      gameData.value.current_player !== gameData.value.user_player
+      gameData.value.current_player !== gameData.value.user_player && 
+      attempts < maxAttempts
     ) {
-      const res = await api.post('/solo_autoplay', { user_id: store.userId }, {
-        headers: { 'ngrok-skip-browser-warning': 'true' }
-      });
+      attempts++;
+      
+      // 先获取最新状态
       const state = await api.get(`/solo_state/${store.userId}`, {
         headers: { 'ngrok-skip-browser-warning': 'true' }
       });
       gameData.value = state.data;
-
-      // 添加延迟避免频繁请求
+      
+      // 如果还是AI回合才执行自动出牌
+      if (!gameData.value.is_game_over && 
+          gameData.value.current_player !== gameData.value.user_player) {
+        await api.post('/solo_autoplay', { user_id: store.userId }, {
+          headers: { 'ngrok-skip-browser-warning': 'true' }
+        });
+        
+        // 再次获取更新后的状态
+        const newState = await api.get(`/solo_state/${store.userId}`, {
+          headers: { 'ngrok-skip-browser-warning': 'true' }
+        });
+        gameData.value = newState.data;
+      }
+      
       await new Promise(resolve => setTimeout(resolve, 500));
     }
   } catch (e) {
@@ -314,7 +332,10 @@ const goBack = () => {
   console.log('返回设置页面');
   router.push('/')
 }
-
+// 是否使用双列布局（AI建议超过3条时）
+const shouldUseTwoColumns = computed(() => {
+  return gameData.value?.ai_suggestions?.length > 3;
+});
 onMounted(refreshState)
 </script>
 
@@ -380,33 +401,78 @@ onMounted(refreshState)
 
 /* AI建议区域 */
 .ai-suggestion-container {
-  background-color: #e3f2fd;
-  border-radius: 10px;
-  padding: 0.5rem;
   display: flex;
-  gap: 1.25rem;
+  gap: 20px;
+  margin-top: 20px;
+  background-color: #e6f2ff;  /* 浅蓝色背景 */
+  padding: 20px;
+  border-radius: 10px;
 }
 
+/* 2:1的比例布局 */
 .suggestion-section {
-  flex: 3;
+  flex: 2;  /* 2份宽度 */
+  background: rgba(255, 255, 255, 0.8); /* 浅白色半透明背景 */
+  padding: 15px;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
 }
 
-.suggestion-section h3 {
+.last-play-section {
+  flex: 1;  /* 1份宽度 */
+  background: rgba(255, 255, 255, 0.8); /* 浅白色半透明背景 */
+  padding: 15px;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.suggestion-section h3,
+.last-play-section h3 {
   margin-top: 0;
-  margin-bottom: 0.75rem;
-  font-size: 1.1rem;
+  color: #333;
+  border-bottom: 1px solid #eee;
+  padding-bottom: 8px;
 }
 
 .suggestion-section ul {
-  margin: 0;
-  padding-left: 1rem;
+  padding-left: 20px;
+  margin: 10px 0 0;
 }
 
 .suggestion-section li {
-  margin-bottom: 0.5rem;
-  background: #f8f9fa;
-  padding: 0.5rem;
-  border-radius: 6px;
+  margin-bottom: 8px;
+  line-height: 1.4;
+}
+
+/* 双列布局样式 */
+.suggestion-section.two-columns ul {
+  column-count: 2;
+  column-gap: 20px;
+}
+
+.last-play-cards {
+  margin-top: 10px;
+  padding: 10px;
+  background: #fff;
+  border-radius: 4px;
+  border: 1px solid #ddd;
+}
+
+/* 响应式调整 */
+@media (max-width: 768px) {
+  .ai-suggestion-container {
+    flex-direction: column;
+  }
+  
+  .suggestion-section,
+  .last-play-section {
+    flex: none;
+    width: 100%;
+  }
+  
+  .suggestion-section.two-columns ul {
+    column-count: 1;
+  }
 }
 
 .last-play-section {
