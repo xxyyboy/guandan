@@ -1,4 +1,4 @@
-from test import GuandanGame,M
+from FrontendGame import GuandanGame,M
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from server.schemas import PlayerConfig, RoomState

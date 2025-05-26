@@ -1,5 +1,5 @@
 import streamlit as st
-from test import GuandanGame,M
+from FrontendGame import GuandanGame,M
 import os
 
 def convert_card_display(card_str):
