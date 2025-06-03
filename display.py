@@ -1,7 +1,8 @@
 import random
 import numpy as np
 from collections import Counter, defaultdict
-from get_actions import enumerate_colorful_actions, CARD_RANKS, SUITS,encode_hand_108
+from get_actions import enumerate_colorful_actions, CARD_RANKS, SUITS, encode_hand_108
+
 try:
     from c_rule import Rules  # 导入 Cython 版本
 except ImportError:
@@ -14,12 +15,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import json
+
 with open("doudizhu_actions.json", "r", encoding="utf-8") as f:
     M = json.load(f)
 action_dim = len(M)
 # 构建动作映射字典
 M_id_dict = {a['id']: a for a in M}
 RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
+
+
 class ActorNet(nn.Module):
     def __init__(self, state_dim=3049, action_dim=action_dim, hidden_dim=512):
         super().__init__()
@@ -36,9 +40,15 @@ class ActorNet(nn.Module):
         if mask is not None:
             logits = logits + (mask - 1) * 1e9
         return F.softmax(logits, dim=-1)
-actor = ActorNet()
-actor.load_state_dict(torch.load("models/actor_ep600.pth"))
-actor.eval()
+
+
+def load_actor_model(path):
+    model = ActorNet()
+    model.load_state_dict(torch.load(path, map_location='cpu'))
+    model.eval()
+    return model
+
+
 class Player:
     def __init__(self, hand):
         """
@@ -50,7 +60,7 @@ class Player:
 
 
 class GuandanGame:
-    def __init__(self, user_player=None, active_level=None, verbose=True, print_history=False,test=False):
+    def __init__(self, user_player=None, active_level=None, verbose=True, print_history=False, test=False,model_path="models/show2.pth"):
         # **两队各自的级牌**
         self.print_history = print_history
         self.active_level = active_level if active_level else random.choice(range(2, 15))
@@ -74,12 +84,13 @@ class GuandanGame:
         self.winning_team = 0
         self.is_game_over = False
         self.upgrade_amount = 0
-        self.test=test
+        self.test = test
+        self.model_path = model_path
+        self.actor = load_actor_model(self.model_path)
 
         # **手牌排序**
         for player in self.players:
             player.hand = self.sort_cards(player.hand)
-
 
     def log(self, message):
         """控制是否打印消息"""
@@ -162,7 +173,7 @@ class GuandanGame:
         if self.user_player == self.current_player:
             result = self.user_play(player)
         else:
-            if self.test and self.current_player == 0:
+            if self.test and (self.current_player == 0 or self.current_player == 2):
                 result = self.actor_play(player)
             else:
                 result = self.ai_play(player)
@@ -370,7 +381,7 @@ class GuandanGame:
         state = self._get_obs()
         state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
         mask = torch.tensor(self.get_valid_action_mask(player.hand, M, self.active_level, self.last_play)).unsqueeze(0)
-        probs = actor(state_tensor, mask)
+        probs = self.actor(state_tensor, mask)
         action_id = torch.multinomial(probs, 1).item()
         action_struct = M_id_dict[action_id]
         # 2. 枚举所有合法出牌组合（带花色）
@@ -449,7 +460,7 @@ class GuandanGame:
             last_action = self.map_cards_to_action(self.last_play, M, self.active_level)
             chosen = self.map_cards_to_action(selected_cards, M, self.active_level)
             # **检查是否能压过上一手牌**
-            if  not self.can_beat(chosen,last_action):
+            if not self.can_beat(chosen, last_action):
                 print("❌ 你的牌无法压过上一手牌，请重新选择！")
                 continue  # 重新输入
 
@@ -484,7 +495,7 @@ class GuandanGame:
 
         return self.check_game_over()
 
-    def get_ai_suggestions(self,player):
+    def get_ai_suggestions(self, player):
         # --- Get AI Suggestions ---
         state = self._get_obs()
         state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
@@ -583,7 +594,7 @@ class GuandanGame:
         # 头游 + 队友的名次，确定得分
         upgrade_map = {1: 3, 2: 2, 3: 1}  # 头游 + (队友的名次) 对应的升级规则
         upgrade_amount = upgrade_map[teammate_position]
-        self.upgrade_amount=upgrade_amount
+        self.upgrade_amount = upgrade_amount
 
         self.log(f"\n🏆 {winning_team} 号队伍获胜！得 {upgrade_amount} 分")
         # 显示最终排名
@@ -619,7 +630,7 @@ class GuandanGame:
         obs = np.zeros(3049)
 
         # 1️⃣ 当前玩家手牌 (108)
-        obs[:108]=encode_hand_108(self.players[self.current_player].hand)
+        obs[:108] = encode_hand_108(self.players[self.current_player].hand)
         offset = 108
 
         # 2️⃣ 其他玩家手牌数量 (3)
@@ -630,13 +641,13 @@ class GuandanGame:
 
         # 3️⃣ 最近动作 (108 * 4 = 432)
         for i, player in enumerate(self.players):
-            obs[offset + i * 108 : offset + (i + 1) * 108] = encode_hand_108(player.last_played_cards)
+            obs[offset + i * 108: offset + (i + 1) * 108] = encode_hand_108(player.last_played_cards)
         offset += 108 * 4
 
         # 4️⃣ 其他玩家已出牌 (108 * 3 = 324)
         for i, player in enumerate(self.players):
             if i != self.current_player:
-                obs[offset + i * 108 : offset + (i + 1) * 108] = encode_hand_108(player.played_cards)
+                obs[offset + i * 108: offset + (i + 1) * 108] = encode_hand_108(player.played_cards)
         offset += 108 * 3
 
         # 5️⃣ 当前级牌 (13)
@@ -684,8 +695,6 @@ class GuandanGame:
         hand_size = len(self.players[self.current_player].hand)
         return -hand_size  # 手牌越少，奖励越高
 
-
-
     def level_card_to_index(self, level_card):
         """
         级牌转换为 one-hot 索引 (2 -> 0, 3 -> 1, ..., A -> 12)
@@ -720,39 +729,81 @@ class GuandanGame:
         """
         return [1, 0, 0]  # 目前默认"不能辅助"，后续可修改逻辑
 
-def test():
-    win = 0
-    first = 0
-    yi = 0
-    er = 0
-    san = 0
-    n=500
-    for _ in range(n):
-        game = GuandanGame(user_player=None,active_level=None,verbose=False,print_history=True,test=True)
-        game.play_game()
-        if game.winning_team == 1:
-            win += 1
-            if game.upgrade_amount == 1:
-                yi += 1
-            elif game.upgrade_amount == 2:
-                er += 1
-            else:
-                san += 1
 
-        if game.ranking[0]==0:
-            first += 1
-    print(n,'场胜率：',win/n*100,'%','\n',
-          '其中，一二名',yi/win*100,'%','\n',
-          '一三名',er/win*100,'%','\n',
-          '一四名',san/win*100,'%','\n',
-          '第一手出完：',first/n*100,'%')
+def test_multiple_models():
+    # 测试的episode范围
+    start_ep = 400
+    end_ep = 3000
+    step = 200
+    test_eps = range(start_ep, end_ep + step, step)
+
+    # 存储结果的字典
+    results = {
+        'episodes': [],
+        'win_rates': [],
+        'first_hand_rates': [],
+        'yi_rates': [],
+        'er_rates': [],
+        'san_rates': []
+    }
+
+    n = 200 # 每个模型测试的场次
+
+    for model_ep in test_eps:
+        win = 0
+        first = 0
+        yi = 0
+        er = 0
+        san = 0
+
+        for _ in range(n):
+            try:
+                game = GuandanGame(user_player=None, active_level=None,
+                                   verbose=False, print_history=True,
+                                   test=True, model_path=f"models/actor_ep{model_ep}.pth")
+                game.play_game()
+
+                if game.winning_team == 1:
+                    win += 1
+                    if game.upgrade_amount == 3:
+                        yi += 1
+                    elif game.upgrade_amount == 2:
+                        er += 1
+                    else:
+                        san += 1
+
+                if game.ranking[0] == 0:
+                    first += 1
+            except Exception as e:
+                print(f"测试模型 actor_ep{model_ep}.pth 时出错: {str(e)}")
+                continue
+
+        # 存储结果
+        results['episodes'].append(model_ep)
+        results['win_rates'].append(win / n * 100)
+        results['first_hand_rates'].append(first / n * 100)
+        results['yi_rates'].append(yi / win * 100 if win > 0 else 0)
+        results['er_rates'].append(er / win * 100 if win > 0 else 0)
+        results['san_rates'].append(san / win * 100 if win > 0 else 0)
+
+    # 打印所有模型的汇总结果
+    print("\n\n" + "=" * 80)
+    print("所有模型测试结果汇总（团队）:")
+    print("=" * 80)
+    print(
+        f"{'Episode':<10}{'胜率(%)':<10}{'第一手出完率(%)':<18}{'一二名(%)':<15}{'一三名(%)':<15}{'一四名(%)':<15}")
+    print("-" * 80)
+    for i in range(len(results['episodes'])):
+        ep = results['episodes'][i]
+        print(f"{ep:<10}{results['win_rates'][i]:<10.2f}{results['first_hand_rates'][i]:<18.2f}"
+              f"{results['yi_rates'][i]:<15.2f}{results['er_rates'][i]:<15.2f}{results['san_rates'][i]:<15.2f}")
+
+    print(results)
+
+
+
 
 
 if __name__ == "__main__":
-
     game = GuandanGame(user_player=1, active_level=None, verbose=True, print_history=True)
     game.play_game()
-
-
-
-

@@ -30,7 +30,7 @@ if st.session_state.page == "setup":
     st.markdown(">推荐使用`show`开头版本")
 
     model_dir = "models"
-    available_models = [f for f in os.listdir(model_dir) if f.endswith(".pth") and (not f.startswith("c"))]
+    available_models = [f for f in os.listdir(model_dir) if f.endswith(".pth") and not(f.startswith("c") or f.startswith("a"))]
 
     default_model = "show2.pth"
     if default_model in available_models:

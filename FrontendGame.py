@@ -827,6 +827,9 @@ class GuandanGame:
             "recent_actions": self.recent_actions
         }
 
+
+
+
 if __name__ == "__main__":
 
     game = GuandanGame(user_player=1, active_level=None, verbose=True, print_history=True)

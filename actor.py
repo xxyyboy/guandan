@@ -87,7 +87,7 @@ def load_latest_models(actor, critic, model_dir="models"):
 initial_ep = load_latest_models(actor, critic)
 
 # 训练函数
-def train_on_batch(batch, gamma=0.99, device= None):
+def train_on_batch(batch, gamma=0.8, device= None):
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
     # 将数据组织为 tensor
@@ -131,7 +131,7 @@ def train_on_batch(batch, gamma=0.99, device= None):
     return actor_loss.item(), critic_loss.item()
 
 # 模拟训练流程
-def run_training(episodes=1000):
+def run_training(episodes=2200):
     os.makedirs("models", exist_ok=True)
     win = 0
     for ep in range(initial_ep, initial_ep + episodes): # 从上次的ep继续

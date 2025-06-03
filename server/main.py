@@ -1,11 +1,10 @@
 from FrontendGame import GuandanGame,M
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from server.schemas import PlayerConfig, RoomState
 from fastapi.responses import JSONResponse
 from server.state import room_store
 from pydantic import BaseModel
-import uuid,os
+import os
 app = FastAPI()
 
 # 添加 CORS 中间件，允许所有来源（开发环境适用）
@@ -24,7 +23,7 @@ def list_models():
     model_dir = os.path.join(current_dir, "..", "models")     # 拼接模型目录
     # print("📂 模型目录：", model_dir)
     try:
-        models = [f for f in os.listdir(model_dir) if not f.startswith("c")]
+        models = [f for f in os.listdir(model_dir) if not (f.startswith("c") or f.startswith("a"))]
         models.sort(key=lambda x: 0 if x == "show2.pth" else 1)
         # print("📂 可用模型列表：", models)
         return JSONResponse(content={"models": models})
@@ -80,7 +79,7 @@ def solo_state(user_id: str):
         "last_play_type": game.map_cards_to_action(game.last_play, M, game.active_level)["type"] if game.last_play else "无",
         "ai_suggestions": game.get_ai_suggestions(),
         "active_level": game.point_to_card(game.active_level),
-        
+
     }
     
 @app.post("/solo_play_card")

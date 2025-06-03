@@ -1,7 +1,17 @@
 <template>
   <div class="solo">
-    <div class="header" style="width: 100%; text-align: center; margin-bottom: 1.5rem;">
-      <h2>🤖 AI 掼蛋对战演示</h2>
+    <div class="header" style="width: 100%; margin-bottom: 1.5rem;">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <div style="flex: 1;"></div> <!-- 左侧占位 -->
+        <h2 style="text-align: center; flex: 1;">🤖 AI 掼蛋对战演示</h2>
+        <div style="display: flex; align-items: center; gap: 0.5rem; justify-content: flex-end; flex: 1;">
+          <a href="https://github.com/746505972/guandan" target="_blank" class="github-link">
+            <img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/github/github-original.svg" width="20">
+            <span>项目仓库</span>
+          </a>
+          <div class="badge">ver. 1.4.1</div>
+        </div>
+      </div>
     </div>
 
     <div v-if="!gameData">加载中...</div>
@@ -103,14 +113,7 @@
           <button @click="goBack" class="sidebar-btn">🔙 返回设置</button>
         </div>
         
-        <!-- 下方链接和信息 -->
-        <div class="sidebar-footer">
-          <a href="https://github.com/746505972/guandan" target="_blank" class="github-link">
-            <img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/github/github-original.svg" width="20">
-            <span>查看项目仓库</span>
-          </a>
-          <div class="badge">ver. 1.4.0</div>
-        </div>
+
 
         <!-- 当前状态 -->
         <div class="current-status">
@@ -125,6 +128,25 @@
           </div>
         </div>
 
+        <div class="card-tracker">
+          <div class="card-tracker-grid">
+            <!-- 王牌 -->
+            <div class="card-tracker-item">
+              <div class="card-tracker-label">大王:</div>
+              <div class="card-tracker-count">{{ 2-remainingCards['大王'] || 0 }}</div>
+            </div>
+            <div class="card-tracker-item">
+              <div class="card-tracker-label">小王:</div>
+              <div class="card-tracker-count">{{ 2-remainingCards['小王'] || 0 }}</div>
+            </div>
+            
+            <!-- 普通牌 -->
+            <div v-for="(value, index) in ['2','3','4','5','6','7','8','9','10','J','Q','K','A']" :key="index" class="card-tracker-item">
+              <div class="card-tracker-label">{{ value }}:</div>
+              <div class="card-tracker-count">{{ 8-remainingCards[value] || 0 }}</div>
+            </div>
+          </div>
+        </div>
         <!-- 出牌历史 -->
         <div class="play-history">
           <h3>📝 出牌历史</h3>
@@ -226,6 +248,49 @@ const autoAdvanceGame = async () => {
   }
 };
 
+// 计算剩余牌数
+const remainingCards = computed(() => {
+  if (!gameData.value?.hand) return {};
+  
+  const cards: Record<string, number> = {};
+  
+  // 初始化牌库 (2副牌)
+  // 王牌
+  cards['大王'] = 2;
+  cards['小王'] = 2;
+  
+  const normalCards = ['2','3','4','5','6','7','8','9','10','J','Q','K','A'];
+  normalCards.forEach(card => {
+    cards[card] = 8;
+  });
+
+  // 统计所有玩家手牌
+  const allPlayerCards: string[] = [];
+  gameData.value.hand.forEach((playerHand: string[]) => {
+    allPlayerCards.push(...playerHand);
+  });
+
+  // 从总牌库中扣除玩家手牌
+  allPlayerCards.forEach((card: string) => {
+    let cardKey;
+    if (card === '大王' || card === '小王') {
+      cardKey = card;
+    } else {
+      // 去掉花色前缀，例如"黑桃3" -> "3"
+      cardKey = card.slice(2);
+    }
+    
+    if (cards[cardKey] !== undefined && cards[cardKey] > 0) {
+      cards[cardKey]--;
+    } else {
+      console.warn(`无效或重复扣除的牌: ${card}`);
+    }
+  });
+  
+  return cards;
+});
+
+
 // 监听游戏数据变化，检查是否需要自动推进
 watch(() => gameData.value, (newVal) => {
   if (newVal && !newVal.is_game_over && 
@@ -287,7 +352,7 @@ const convertCardDisplay = (cardStr: string) => {
 
 const submitMove = async () => {
   try {
-    await api.post('/solo_play_card', {
+    const response = await api.post('/solo_play_card', {
       user_id: store.userId,
       cards: selectedCards.value
     }, {
@@ -295,6 +360,10 @@ const submitMove = async () => {
     });
     selected.value = [];
     await refreshState(); // 确保等待状态刷新完成
+    // 如果返回error，前端提示
+    if (response.data.error) {
+      alert('出牌失败，' + response.data.error);
+    }
   } catch (e) {
     console.error('出牌失败', e);
   }
@@ -372,7 +441,7 @@ onMounted(refreshState)
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 1rem;
-  margin-bottom: 1rem;
+  margin-bottom: 0rem;
 }
 
 .player-card {
@@ -403,7 +472,7 @@ onMounted(refreshState)
 .ai-suggestion-container {
   display: flex;
   gap: 20px;
-  margin-top: 20px;
+  margin-top: 5px;
   background-color: #e6f2ff;  /* 浅蓝色背景 */
   padding: 20px;
   border-radius: 10px;
@@ -626,7 +695,7 @@ onMounted(refreshState)
   display: flex;
   align-items: center;
   gap: 1.25rem;
-  margin: 1rem 0;
+  margin: 0.1rem 0;
 }
 
 .status-item {
@@ -664,7 +733,7 @@ onMounted(refreshState)
   border-radius: 6px;
   border: 1px solid #ccc;
   font-family: monospace;
-  font-size: 0.9rem;
+  font-size: 0.8rem;
 }
 
 /* 调试信息 */
@@ -730,6 +799,48 @@ onMounted(refreshState)
   
   .player-status-container {
     grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.card-tracker {
+  background-color: #f8f9fa;
+  padding: 1rem;
+  border-radius: 8px;
+  margin-bottom: 1rem;
+}
+
+.card-tracker h3 {
+  margin-top: 0;
+  margin-bottom: 0.75rem;
+}
+
+.card-tracker-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 0.5rem;
+}
+
+.card-tracker-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.card-tracker-label {
+  font-weight: bold;
+}
+
+.card-tracker-count {
+  background-color: #e9ecef;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  min-width: 2rem;
+  text-align: center;
+}
+
+@media (max-width: 768px) {
+  .card-tracker-grid {
+    grid-template-columns: repeat(3, 1fr);
   }
 }
 </style>
