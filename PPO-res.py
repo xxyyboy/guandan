@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from guandan_env import GuandanGame
 import time
 from datetime import datetime
+from get_actions import enumerate_colorful_actions
     
 # === 1. 配置与常量 ===
 @dataclass
