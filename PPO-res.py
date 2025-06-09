@@ -1,5 +1,5 @@
 """
-改进的PPO算法实现 - 掼蛋纸牌游戏AI训练 20250609
+改进的PPO算法实现 - 掼蛋纸牌游戏AI训练
 核心目标：降低AI选择Pass的概率，鼓励积极出牌
 """
 
@@ -98,88 +98,86 @@ class ResidualBlock(nn.Module):
         return F.leaky_relu(out, 0.1)
 
 class SharedBackbone(nn.Module):
-    """共享特征提取网络"""
-    def __init__(self, state_dim=3049, hidden_dim=2048):  # 增大隐藏层维度
+    """优化的特征提取网络"""
+    def __init__(self, state_dim=3049, hidden_dim=2048):
         super().__init__()
-        # 手牌特征编码器 (108维)
+        
+        # 添加BatchNorm1d
+        self.input_bn = nn.BatchNorm1d(state_dim)
+        
+        # 手牌编码器优化
         self.card_encoder = nn.Sequential(
             nn.Linear(108, 512),
+            nn.BatchNorm1d(512),
             nn.LeakyReLU(0.1),
-            nn.LayerNorm(512)
+            nn.Dropout(0.15)  # 增加dropout
         )
         
-        # 历史动作时序编码器 (2160维)
+        # 历史动作编码器使用LSTM
         self.history_encoder = nn.LSTM(
-            input_size=2160, 
+            input_size=2160,
             hidden_size=512,
             num_layers=2,
-            batch_first=True
+            batch_first=True,
+            dropout=0.15,
+            bidirectional=True  # 使用双向LSTM
         )
         
-        # 级牌特征嵌入 (13维)
-        self.level_embed = nn.Embedding(13, 64)
-        
-        # 融合层
-        self.fusion = nn.Sequential(
-            nn.Linear(512+512+64, hidden_dim),
+        # 场景信息编码器
+        self.context_encoder = nn.Sequential(
+            nn.Linear(781, 256),
+            nn.BatchNorm1d(256),
             nn.LeakyReLU(0.1),
-            nn.LayerNorm(hidden_dim)
+            nn.Dropout(0.15),
+            nn.Linear(256, 128),
+            nn.BatchNorm1d(128),
+            nn.LeakyReLU(0.1)
         )
         
-        # 残差块
-        self.res_blocks = nn.ModuleList([
-            ResidualBlock(hidden_dim, hidden_dim),
-            ResidualBlock(hidden_dim, hidden_dim),
-            ResidualBlock(hidden_dim, hidden_dim//2)
-        ])
-        self.eval_mode = False  # 初始化eval_mode属性
-        self._init_weights() # 正交初始化
+        # 融合层优化
+        self.fusion = nn.Sequential(
+            nn.Linear(512+1024+128, hidden_dim),  # 1024是双向LSTM的输出维度
+            nn.BatchNorm1d(hidden_dim),
+            nn.LeakyReLU(0.1),
+            nn.Dropout(0.15)
+        )
         
-    def _init_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.orthogonal_(m.weight, gain=1.0)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0.0)
-                    
+        # 残差块优化
+        self.res_blocks = nn.ModuleList([
+            ResidualBlock(hidden_dim, hidden_dim, dropout_rate=0.15),
+            ResidualBlock(hidden_dim, hidden_dim, dropout_rate=0.15),
+            ResidualBlock(hidden_dim, hidden_dim//2, dropout_rate=0.15)
+        ])
+        
     def forward(self, x):
-        # 手牌特征提取
+        # 输入标准化
+        x = self.input_bn(x)
+        
+        # 特征提取
         card_feat = self.card_encoder(x[..., :108])
         
-        # 历史动作特征提取
         history_feat, _ = self.history_encoder(x[..., 108:2268].unsqueeze(1))
         history_feat = history_feat.squeeze(1)
         
-        # 级牌特征提取
-        level_idx = torch.argmax(x[..., 2268:2281], dim=-1).long()
-        level_feat = self.level_embed(level_idx)
+        context_feat = self.context_encoder(x[..., 2268:])
         
         # 特征融合
-        x = torch.cat([card_feat, history_feat, level_feat], dim=-1)
+        x = torch.cat([card_feat, history_feat, context_feat], dim=-1)
         x = self.fusion(x)
         
-        # 残差块处理
+        # 残差处理
         for res_block in self.res_blocks:
             x = res_block(x)
+            
         return x
-    
-    def eval(self):
-        """设置评估模式"""
-        super().eval()
-        self.eval_mode = True
-        
-    def train(self, mode=True):
-        """设置训练模式"""
-        super().train(mode)
-        self.eval_mode = not mode
         
 class ImprovedResNetActor(nn.Module):
     """策略网络"""
     def __init__(self, backbone, action_dim=action_dim):
         super().__init__()
-        self.backbone = backbone # 共享特征提取
+        self.backbone = backbone
         backbone_out_dim = backbone.res_blocks[-1].fc2.out_features
-        # 策略头
+        
         self.fc_policy = nn.Sequential(
             nn.Linear(backbone_out_dim, backbone_out_dim//2),
             nn.LayerNorm(backbone_out_dim//2),
@@ -187,22 +185,18 @@ class ImprovedResNetActor(nn.Module):
             nn.Linear(backbone_out_dim//2, action_dim),
             nn.LayerNorm(action_dim)
         )
-        self._init_weights()
         
-    def _init_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.orthogonal_(m.weight, gain=1.0)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0.0)
-                    
     def forward(self, x, mask=None):
         features = self.backbone(x)
         logits = self.fc_policy(features)
-        # 重点：降低Pass（假设为动作0）的logit分数，训练初期出牌更积极
+        
+        # 降低Pass的概率
         logits[..., 0] -= 1.5
+        
+        # 应用动作掩码
         if mask is not None:
             logits = logits + (mask.float() - 1) * 1e9
+        
         probs = F.softmax(logits, dim=-1)
         return probs, logits
 
@@ -287,64 +281,71 @@ def validate_game_state(game):
     return True
 
 def calculate_improved_reward(entry, player, mask, action_id, hand_size_before, game, ep):
-    """动态奖励函数2.0 - 强化关键决策奖励"""
+    """优化的奖励计算"""
     reward = 0.0
     hand_size = len(player.hand)
-    progress = (27 - hand_size) / 27  # 游戏进度[0,1]
+    progress = (27 - hand_size) / 27
     
-    # 1. 智能Pass惩罚机制
-    if action_id == 0:  # Pass动作
-        # 动态惩罚系数 = 基础惩罚 + 进度惩罚 + 训练阶段衰减
-        base_penalty = 0.8 + (1 - progress)**2  # 后期惩罚加重
-        phase_factor = max(0.3, 1.0 - ep/5000)  # 训练后期降低惩罚
+    # Pass处理优化
+    if action_id == 0:
+        base_penalty = 0.15 + (1 - progress) * 0.15  # 进一步降低Pass惩罚
+        phase_factor = max(0.2, 0.5 - ep/12000)
         penalty = -base_penalty * phase_factor
         
-        # 自由出牌回合禁止Pass
+        # 场景相关惩罚调整
         if game.is_free_turn:
-            penalty *= 2.0
-            
-        # 对手即将出完牌时加重惩罚
-        opp_hands = [len(p.hand) for i,p in enumerate(game.players) if i != 0]
-        if min(opp_hands) <= 3:
-            penalty *= 1.5 + (4 - min(opp_hands))*0.3
+            penalty *= 1.2
+        elif game.last_play and len(game.last_play) >= 4:
+            penalty *= 0.2  # 大幅降低对大牌的Pass惩罚
             
         reward += penalty
         
-    # 2. 出牌奖励体系
     else:
-        # 基础奖励 (动态调整)
-        base_reward = 0.5 + progress*0.5  # 后期奖励更高
-        
-        # 牌型系数
+        # 出牌奖励优化
         action_type = entry.get('type', '')
+        cards_played = hand_size_before - hand_size
+        
+        # 基础奖励(考虑剩余牌数)
+        base_reward = 0.4 + progress * 0.3
+        if hand_size <= len(player.hand) / 2:
+            base_reward *= 1.2  # 牌数少于一半时增加奖励
+            
+        # 牌型奖励优化
         type_bonus = {
-            'single': 0.1, 'pair': 0.2, 'trio': 0.3,
-            'bomb': 1.2, 'rocket': 2.0, 'sequence': 0.4
+            'single': 0.2 + (1-progress)*0.2,
+            'pair': 0.25 + progress*0.1,
+            'trio': 0.3 + progress*0.15,
+            'bomb': 0.5 + progress*0.3,  # 降低炸弹奖励
+            'rocket': 0.8,  # 降低火箭奖励
+            'sequence': 0.35 + len(game.last_play)*0.04
         }.get(action_type, 0.0)
         
-        # 数量奖励 (非线性增长)
-        cards_played = hand_size_before - hand_size
-        count_bonus = 0.2 * math.sqrt(cards_played)
-        
-        reward += base_reward + type_bonus + count_bonus
-        
-        # 关键阶段奖励 (剩余牌<5时指数增长)
-        if hand_size <= 5:
-            reward += (6 - hand_size)**1.5 * 0.2
+        # 控制权奖励
+        control_bonus = 0.0
+        if game.last_player == 0:
+            control_bonus = 0.2 + progress * 0.15
             
-    # 3. 终局奖励优化
-    if game.is_game_over:
-        rank = game.ranking.index(0)  # 玩家名次
-        rank_rewards = [10.0, 7.0, -4.0, -6.0]  # 更平缓的奖励曲线
-        
-        # 队伍胜利检测
-        teammate = 2 if 0 in [0,2] else 3
-        if rank < 2 and teammate in game.ranking[:2]:
-            rank_rewards[rank] *= 1.5  # 队伍胜利加成
+        # 关键牌奖励
+        key_card_bonus = 0.0
+        if any(c[0] in ['A', '2'] for c in game.recent_actions[0]):
+            key_card_bonus = 0.15 + progress * 0.1
             
-        reward += rank_rewards[rank]
-    
-    return reward  # 确保函数有返回值
+        # 配合队友奖励
+        teammate_bonus = 0.0
+        teammate = (game.current_player + 2) % 4
+        if game.last_player == teammate:
+            teammate_bonus = 0.2
+            
+        reward += (base_reward + type_bonus + control_bonus + 
+                  key_card_bonus + teammate_bonus)
+        
+        # 终局优化
+        if hand_size <= 3:
+            reward += (4 - hand_size) * 0.4
+            if hand_size == 0:  # 出完牌额外奖励
+                reward += 2.0
+                
+    return reward
 
 def compute_gae(rewards, values, next_values, dones, gamma=0.99, gae_lambda=0.95):
     batch_size = len(rewards)
@@ -396,55 +397,106 @@ def load_checkpoint(device, backbone, actor, critic, optimizer, model_dir="model
 
 def train_on_batch_ppo(states, actions, rewards, next_states, dones, old_log_probs,
                       backbone, actor, critic, target_critic, optimizer,
-                      gamma=0.99, gae_lambda=0.95, clip_epsilon=0.2,
-                      entropy_coef=0.1, device=device, ep=0):
+                      gamma=0.99, gae_lambda=0.95, device=device, ep=0):
+    """优化后的PPO训练函数"""
     states = torch.FloatTensor(states).to(device)
     next_states = torch.FloatTensor(next_states).to(device)
     actions = torch.LongTensor(actions).to(device)
     rewards = torch.FloatTensor(rewards).to(device)
     dones = torch.BoolTensor(dones).to(device)
     old_log_probs = torch.FloatTensor(old_log_probs).to(device)
+
+    # 标准化rewards
+    rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-8)
+
+    # 计算优势值和回报
     with torch.no_grad():
         next_values = target_critic(next_states).squeeze(-1)
     values = critic(states).squeeze(-1)
-    advantages, returns = compute_gae(rewards, values, next_values, dones, gamma, gae_lambda)
+    
+    # 使用TD(λ)计算优势
+    advantages = torch.zeros_like(rewards)
+    returns = torch.zeros_like(rewards)
+    gae = 0
+    for t in reversed(range(len(rewards))):
+        if t == len(rewards) - 1:
+            next_value = next_values[t]
+        else:
+            next_value = values[t + 1]
+        delta = rewards[t] + gamma * next_value * (1 - dones[t].float()) - values[t]
+        gae = delta + gamma * gae_lambda * (1 - dones[t].float()) * gae
+        advantages[t] = gae
+        returns[t] = advantages[t] + values[t]
+    
+    # 标准化优势值
+    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+    # 计算新的动作概率
     probs, logits = actor(states)
     dist = Categorical(probs)
     new_log_probs = dist.log_prob(actions)
     entropy = dist.entropy().mean()
     
-    # 调整熵系数
-    if ep < 200:
-        entropy_coef = 0.05  # 降低初始熵系数
-    else:
-        entropy_coef = max(0.005, 0.05 * (0.995 ** ((ep-200)//50)))
-        
+    # 计算KL散度并动态调整clip范围
     kl_div = (old_log_probs - new_log_probs).mean()
+    if kl_div > 0.02:
+        clip_epsilon = max(0.1, 0.15)  # 收紧clip范围
+    else:
+        clip_epsilon = max(0.1, 0.2 * (0.998 ** (ep // 50)))  # 放宽clip范围衰减
     
+    # 计算策略损失
     ratios = torch.exp(new_log_probs - old_log_probs)
     surr1 = ratios * advantages
     surr2 = torch.clamp(ratios, 1.0 - clip_epsilon, 1.0 + clip_epsilon) * advantages
     policy_loss = -torch.min(surr1, surr2).mean()
-    # 策略正则化和Pass惩罚
+    
+    # 动态调整Pass惩罚
     pass_probs = probs[:, 0]
-    policy_loss += 0.1 * pass_probs.mean()
-    if kl_div > 0.02:
-        policy_loss *= 1.2
-    value_clipped = values + (returns - values).clamp(-clip_epsilon, clip_epsilon)
-    critic_loss1 = F.smooth_l1_loss(values, returns)
-    critic_loss2 = F.smooth_l1_loss(value_clipped, returns)
-    critic_loss = torch.max(critic_loss1, critic_loss2).mean()
-    value_loss_weight = max(0.25, 0.5 * (0.999 ** ep))
-    total_loss = policy_loss + value_loss_weight * critic_loss - entropy_coef * entropy
+    pass_penalty_factor = max(0.02, 0.1 * (0.995 ** ep))  # 降低Pass惩罚
+    pass_penalty = pass_penalty_factor * pass_probs.mean()
+    policy_loss += pass_penalty
+    
+    # Value Loss计算优化
+    value_pred = critic(states)
+    value_targets = returns.unsqueeze(-1)
+    value_loss = F.smooth_l1_loss(value_pred, value_targets)
+    value_loss = value_loss.clamp(-8.0, 8.0)  # 扩大value loss范围
+    
+    # 动态熵系数
+    if ep < 200:  # 延长初始探索期
+        entropy_coef = 0.03  # 提高初始熵系数
+    else:
+        entropy_coef = max(0.005, 0.03 * (0.9995 ** ((ep-200)//50)))  # 降低熵衰减速度
+    
+    # 动态调整value loss权重
+    value_loss_weight = min(1.0, 0.5 + ep/1000)  # 随训练进程增加value loss权重
+    
+    # 总损失
+    total_loss = policy_loss + value_loss_weight * value_loss - entropy_coef * entropy
+    
+    # 检查损失值
+    if torch.isnan(total_loss) or torch.isinf(total_loss):
+        logging.warning(f"Invalid loss detected: {total_loss}")
+        return policy_loss.item(), value_loss.item(), entropy.item(), kl_div.item()
+    
+    # 优化器步骤
     optimizer.zero_grad()
     total_loss.backward()
-    torch.nn.utils.clip_grad_norm_(backbone.parameters(), max_norm=1.0)
-    torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=1.0)
-    torch.nn.utils.clip_grad_norm_(critic.parameters(), max_norm=1.0)
+    
+    # 梯度裁剪和缩放
+    max_grad_norm = 1.0  # 提高梯度裁剪阈值
+    grad_norm = torch.nn.utils.clip_grad_norm_(backbone.parameters(), max_grad_norm)
+    if grad_norm > max_grad_norm:
+        for param in backbone.parameters():
+            if param.grad is not None:
+                param.grad.data.mul_(max_grad_norm / (grad_norm + 1e-6))
+    
+    torch.nn.utils.clip_grad_norm_(actor.parameters(), max_grad_norm)
+    torch.nn.utils.clip_grad_norm_(critic.parameters(), max_grad_norm)
+    
     optimizer.step()
-    return policy_loss.item(), critic_loss.item(), entropy.item(), kl_div.item()
-
-# ...其余内容不变...
+    
+    return policy_loss.item(), value_loss.item(), entropy.item(), kl_div.item()
 
 def run_training(episodes=30000):
     """改进的训练流程 - 添加课程学习和目标网络"""
@@ -473,35 +525,41 @@ def run_training(episodes=30000):
     # 优化器分组设置
     optimizer_params = []
     
-    # 1. 添加actor独有参数
-    optimizer_params.append({
-        'params': [p for n,p in actor.named_parameters() 
-                  if not n.startswith('backbone.')],
-        'lr': 3e-5
-    })
-    
-    # 2. 添加critic独有参数
-    optimizer_params.append({
-        'params': [p for n,p in critic.named_parameters()
-                  if not n.startswith('backbone.')],
-        'lr': 3e-5
-    })
-    
-    # 3. 添加共享主干参数（只添加一次）
-    optimizer_params.append({
-        'params': backbone.parameters(),
-        'lr': 1e-5
-    })
-    
-    optimizer = optim.AdamW(optimizer_params, weight_decay=1e-4)
-    
+    # 优化器设置
+    optimizer_params = [
+        {'params': [p for n,p in actor.named_parameters() 
+                if not n.startswith('backbone.')],
+        'lr': 2e-4},  # 提高actor学习率
+        {'params': [p for n,p in critic.named_parameters()
+                if not n.startswith('backbone.')],
+        'lr': 1e-4},  # 降低critic学习率
+        {'params': backbone.parameters(),
+        'lr': 5e-5}   # 降低backbone学习率
+    ]
+
+    optimizer = optim.AdamW(optimizer_params, weight_decay=1e-5)
+
+    # 学习率调度器优化
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, 'min', patience=50, factor=0.97, min_lr=1e-5
+        optimizer, 
+        mode='min',
+        patience=100,    # 增加patience
+        factor=0.95,     # 降低学习率衰减系数
+        min_lr=1e-5,
+        verbose=True
     )
+    
     memory = ReplayBuffer(capacity=10000)
     writer = SummaryWriter(f'runs/guandan_ppo_{datetime.now().strftime("%Y%m%d_%H%M%S")}')
     initial_ep = load_checkpoint(device, backbone, actor, critic, optimizer)
     best_reward = float('-inf')
+    
+    # 初始化训练指标
+    policy_loss = float('inf')  # 初始化为一个大值
+    value_loss = 0
+    entropy = 0
+    kl_div = 0
+    
     def soft_update(target, source, tau=0.001):
         for target_param, param in zip(target.parameters(), source.parameters()):
             target_param.data.copy_(
@@ -650,13 +708,14 @@ def run_training(episodes=30000):
                     game.pass_count = 0
                     print("死循环检测，mask:", mask.cpu().numpy())
         
-            if len(memory) >= 128:
-                states, actions, rewards, next_states, dones, old_log_probs = memory.sample(128)
-                policy_loss, value_loss, entropy, kl_div = train_on_batch_ppo(
-                    states, actions, rewards, next_states, dones, old_log_probs,
-                    backbone, actor, critic, target_critic, optimizer,
-                    entropy_coef=0.1, device=device, ep=ep
-                )
+                if len(memory) >= 128:
+                    states, actions, rewards, next_states, dones, old_log_probs = memory.sample(128)
+                    policy_loss, value_loss, entropy, kl_div = train_on_batch_ppo(
+                        states, actions, rewards, next_states, dones, old_log_probs,
+                        backbone, actor, critic, target_critic, optimizer,
+                        device=device, ep=ep
+                    )
+                    
                 soft_update(target_backbone, backbone)
                 soft_update(target_critic, critic)
                 scheduler.step(policy_loss)
@@ -668,19 +727,22 @@ def run_training(episodes=30000):
                 writer.add_scalar('Training/EpisodeSteps', episode_steps, ep)
                 for i, param_group in enumerate(optimizer.param_groups):
                     writer.add_scalar(f'Training/LR_group_{i}', param_group['lr'], ep)
-                if (ep + 1) % 50 == 0:
-                    logging.info(
-                        f"Episode {ep + 1}: "
-                        f"PLoss={policy_loss:.4f}, VLoss={value_loss:.4f}, "
-                        f"Entropy={entropy:.4f}, KL={kl_div:.4f}, "
-                        f"Reward={episode_reward:.2f}, Steps={episode_steps}"
-                    )
-                if episode_reward > best_reward:
-                    best_reward = episode_reward
-                    save_checkpoint(backbone, actor, critic, optimizer, ep + 1,
-                                 model_dir="models/best")
+                    
+            if (ep + 1) % 1 == 0:
+                logging.info(
+                    f"Episode {ep + 1}: "
+                    f"PLoss={policy_loss:.4f}, VLoss={value_loss:.4f}, "
+                    f"Entropy={entropy:.4f}, KL={kl_div:.4f}, "
+                    f"Reward={episode_reward:.2f}, Steps={episode_steps}"
+                )
+                    
+            if episode_reward > best_reward:
+                best_reward = episode_reward
+                save_checkpoint(backbone, actor, critic, optimizer, ep + 1,
+                             model_dir="models/best")
             if (ep + 1) % 200 == 0:
                 save_checkpoint(backbone, actor, critic, optimizer, ep + 1)
+                
     except KeyboardInterrupt:
         logging.info("训练被手动中断")
         save_checkpoint(backbone, actor, critic, optimizer, ep + 1,
