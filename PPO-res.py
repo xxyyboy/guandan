@@ -99,7 +99,7 @@ class ResidualBlock(nn.Module):
 
 # 修改SharedBackbone类
 class SharedBackbone(nn.Module):
-    def __init__(self, state_dim=3049, hidden_dim=2048):
+    def __init__(self, state_dim=3049, hidden_dim=1024):
         super().__init__()
         
         self.input_bn = nn.BatchNorm1d(state_dim)
@@ -200,17 +200,22 @@ class SharedBackbone(nn.Module):
         self.eval_mode = not mode
             
 class ImprovedResNetActor(nn.Module):
-    """策略网络"""
+    """改进的策略网络"""
     def __init__(self, backbone, action_dim=action_dim):
         super().__init__()
         self.backbone = backbone
         backbone_out_dim = backbone.res_blocks[-1].fc2.out_features
         
+        # 更深的策略头
         self.fc_policy = nn.Sequential(
             nn.Linear(backbone_out_dim, backbone_out_dim//2),
             nn.LayerNorm(backbone_out_dim//2),
-            nn.ReLU(),
-            nn.Linear(backbone_out_dim//2, action_dim),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(backbone_out_dim//2, backbone_out_dim//4),
+            nn.LayerNorm(backbone_out_dim//4),
+            nn.GELU(),
+            nn.Linear(backbone_out_dim//4, action_dim),
             nn.LayerNorm(action_dim)
         )
         
@@ -218,8 +223,13 @@ class ImprovedResNetActor(nn.Module):
         features = self.backbone(x)
         logits = self.fc_policy(features)
         
-        # 降低Pass的概率
-        logits[..., 0] -= 1.5
+        # 动态Pass抑制 - 根据训练阶段调整
+        if self.training:
+            pass_penalty = 1.2  # 训练时中等抑制
+        else:
+            pass_penalty = 0.8  # 评估时轻微抑制
+            
+        logits[..., 0] -= pass_penalty
         
         # 应用动作掩码
         if mask is not None:
@@ -258,13 +268,16 @@ class ImprovedResNetCritic(nn.Module):
         return value
 
 def select_action(actor, state, mask, device, is_free_turn, ep):
-    """智能动作选择策略3.0"""
+    """改进的动作选择策略4.0"""
     state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(device)
     mask_tensor = torch.tensor(mask, dtype=torch.float32).unsqueeze(0).to(device)
     
-    # 动态探索参数
-    explore_factor = max(0.1, 0.5 * (0.98 ** (ep // 100)))  # 衰减更慢
-    temp = max(0.5, 1.5 - ep/4000)  # 温度参数
+    # 更平缓的探索衰减曲线
+    explore_factor = max(0.15, 0.6 * (0.992 ** (ep // 50)))  # 衰减更慢
+    temp = max(0.7, 2.0 - ep/5000)  # 更高的初始温度
+    
+    # 动态Pass抑制系数
+    pass_suppress = 1.8 + (1 - ep/8000)  # 随训练逐渐降低
     
     with torch.no_grad():
         probs, logits = actor(state_tensor, mask_tensor)
@@ -280,7 +293,7 @@ def select_action(actor, state, mask, device, is_free_turn, ep):
         # 炸弹动作奖励
         bomb_mask = torch.zeros_like(logits)
         bomb_mask[:, 120:456] = 1  # 炸弹动作区间
-        logits += bomb_mask * (0.5 + ep/8000)  # 随训练逐渐重视炸弹
+        logits += bomb_mask * (0.3 + ep/8000)  # 随训练逐渐重视炸弹
         
         # 改进的探索机制
         if random.random() < explore_factor:
@@ -317,17 +330,26 @@ def validate_game_state(game):
     return True
 
 def calculate_improved_reward(entry, player, mask, action_id, hand_size_before, game, ep):
-    """优化的奖励计算"""
+    """改进的奖励计算"""
     reward = 0.0
-    # 添加基础奖励
-    base_reward = 0.1  # 小的正向基准奖励
+    progress = (27 - len(player.hand)) / 27  # 游戏进度[0,1]
+    
+    # 动态基础奖励 - 随游戏进度增加
+    base_reward = 0.1 + progress * 0.2
     reward += base_reward
+    
+    # 炸弹使用奖励调整
+    bomb_bonus = {
+        'bomb': 0.4 + progress*0.3,
+        'straight_bomb': 0.7 + progress*0.4,
+        'joker_bomb': 1.2  # 降低天王炸奖励
+    }
     hand_size = len(player.hand)
     progress = (27 - hand_size) / 27
     
     # 春天判断 - 第一轮就出完所有牌
     if game.current_round == 1 and hand_size == 0:
-        reward += 5.0  # 春天额外奖励
+        reward += 2.5  # 春天额外奖励
         game.log(f"🎉 春天！玩家 {game.current_player + 1} 在第一轮就出完所有牌！")
     
     # Pass处理优化
@@ -444,7 +466,7 @@ def load_checkpoint(device, backbone, actor, critic, optimizer, model_dir="model
 
 def train_on_batch_ppo(states, actions, rewards, next_states, dones, old_log_probs,
                       backbone, actor, critic, target_critic, optimizer,
-                      gamma=0.99, gae_lambda=0.95, device=device, ep=0):
+                      gamma=0.995, gae_lambda=0.95, device=device, ep=0):
     """优化后的PPO训练函数"""
     states = torch.FloatTensor(states).to(device)
     next_states = torch.FloatTensor(next_states).to(device)
@@ -551,11 +573,11 @@ def run_training(episodes=30000):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     adaptive_params = {
-        'min_batch_size': 128,  # 增加最小batch size
-        'max_batch_size': 2048,  # 增加最大batch size
-        'batch_growth_interval': 128,  # 更频繁地增加batch size
-        'current_batch_size': 128,
-        'growth_step': 32
+        'min_batch_size': 512,  # 增大初始batch size
+        'max_batch_size': 8192,  # 增大最大batch size
+        'batch_growth_interval': 64,  # 更频繁调整
+        'current_batch_size': 512,
+        'growth_step': 128  # 增大增长步长
     }
     
     # 改进的课程学习
@@ -574,6 +596,9 @@ def run_training(episodes=30000):
                 return {'level': (6,10), 'opponent': 'self'}
         else:
             return {'level': (8,14), 'opponent': 'self'}
+    
+    # 启用cuDNN benchmark模式
+    torch.backends.cudnn.benchmark = True
     
     # 初始化网络
     backbone = SharedBackbone().to(device)
@@ -595,8 +620,8 @@ def run_training(episodes=30000):
     optimizer_params = [
         {'params': [p for n,p in actor.named_parameters() 
                 if not n.startswith('backbone.')],
-         'lr': 3e-4,
-         'weight_decay': 1e-4},
+         'lr': 3e-5,
+         'weight_decay': 1e-5},
         {'params': [p for n,p in critic.named_parameters()
                 if not n.startswith('backbone.')],
         'lr': 1.5e-4},  # 降低critic学习率
@@ -627,7 +652,7 @@ def run_training(episodes=30000):
     entropy = 0
     kl_div = 0
     
-    def soft_update(target, source, tau=0.001):
+    def soft_update(target, source, tau=0.005):
         for target_param, param in zip(target.parameters(), source.parameters()):
             target_param.data.copy_(
                 target_param.data * (1.0 - tau) + param.data * tau
@@ -797,7 +822,7 @@ def run_training(episodes=30000):
                     policy_loss, value_loss, entropy, kl_div = train_on_batch_ppo(
                         states, actions, rewards, next_states, dones, old_log_probs,
                         backbone, actor, critic, target_critic, optimizer,
-                        gamma=0.99, gae_lambda=0.95, device=device, ep=ep
+                        gamma=0.99, gae_lambda=0.97, device=device, ep=ep
                     )
                     
                 soft_update(target_backbone, backbone)
@@ -812,7 +837,7 @@ def run_training(episodes=30000):
                 for i, param_group in enumerate(optimizer.param_groups):
                     writer.add_scalar(f'Training/LR_group_{i}', param_group['lr'], ep)
                     
-            if (ep + 1) % 1 == 0:
+            if (ep + 1) % 10 == 0:
                 # 添加梯度范数监控
                 grad_norms = []
                 for param in backbone.parameters():
