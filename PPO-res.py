@@ -97,69 +97,69 @@ class ResidualBlock(nn.Module):
         out += residual
         return F.leaky_relu(out, 0.1)
 
+# 修改SharedBackbone类
 class SharedBackbone(nn.Module):
-    """优化的特征提取网络"""
     def __init__(self, state_dim=3049, hidden_dim=2048):
         super().__init__()
         
-        # 添加BatchNorm1d
         self.input_bn = nn.BatchNorm1d(state_dim)
-        self.eval_mode = False  # 初始化eval_mode属性
+        self.eval_mode = False
         
-        # 手牌编码器优化
+        # 改进的手牌编码器
         self.card_encoder = nn.Sequential(
             nn.Linear(108, 512),
-            nn.BatchNorm1d(512),
-            nn.LeakyReLU(0.1),
-            nn.Dropout(0.15)  # 增加dropout
+            nn.LayerNorm(512),
+            nn.GELU(),  # 使用GELU替代LeakyReLU
+            nn.Dropout(0.2),
+            nn.Linear(512, 512),
+            nn.LayerNorm(512),
+            nn.GELU()
         )
         
-        # 历史动作编码器使用LSTM
+        # 改进的历史动作编码器
         self.history_encoder = nn.LSTM(
             input_size=2160,
             hidden_size=512,
-            num_layers=2,
+            num_layers=3,  # 增加层数
             batch_first=True,
-            dropout=0.15,
-            bidirectional=True  # 使用双向LSTM
+            dropout=0.2,
+            bidirectional=True
         )
         
-        # 场景信息编码器
+        # 改进的场景信息编码器
         self.context_encoder = nn.Sequential(
-            nn.Linear(781, 256),
-            nn.BatchNorm1d(256),
-            nn.LeakyReLU(0.1),
-            nn.Dropout(0.15),
-            nn.Linear(256, 128),
-            nn.BatchNorm1d(128),
-            nn.LeakyReLU(0.1)
+            nn.Linear(781, 384),
+            nn.LayerNorm(384),
+            nn.GELU(),
+            nn.Dropout(0.2),
+            nn.Linear(384, 256),
+            nn.LayerNorm(256),
+            nn.GELU()
         )
         
-        # 融合层优化
-        self.fusion = nn.Sequential(
-            nn.Linear(512+1024+128, hidden_dim),  # 1024是双向LSTM的输出维度
-            nn.BatchNorm1d(hidden_dim),
-            nn.LeakyReLU(0.1),
-            nn.Dropout(0.15)
-        )
-        
-        # 残差块优化
-        self.res_blocks = nn.ModuleList([
-            ResidualBlock(hidden_dim, hidden_dim, dropout_rate=0.15),
-            ResidualBlock(hidden_dim, hidden_dim, dropout_rate=0.15)
-        ])
-        
-        # 添加自注意力层
-        self.attention = nn.MultiheadAttention(
-            embed_dim=hidden_dim,
-            num_heads=4,
+        # 多头注意力层
+        self.self_attention = nn.MultiheadAttention(
+            embed_dim=512+1024+256,
+            num_heads=8,
             dropout=0.1,
             batch_first=True
         )
-        self.final_res = ResidualBlock(hidden_dim, hidden_dim//2, dropout_rate=0.15)
         
+        # 改进的融合层
+        self.fusion = nn.Sequential(
+            nn.Linear(512+1024+256, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Dropout(0.2)
+        )
+        
+        # 更深的残差块
+        self.res_blocks = nn.ModuleList([
+            ResidualBlock(hidden_dim, hidden_dim, dropout_rate=0.2)
+            for _ in range(4)  # 增加残差块数量
+        ])
+
     def forward(self, x):
-        # 输入标准化
         x = self.input_bn(x)
         
         # 特征提取
@@ -171,8 +171,17 @@ class SharedBackbone(nn.Module):
         context_feat = self.context_encoder(x[..., 2268:])
         
         # 特征融合
-        x = torch.cat([card_feat, history_feat, context_feat], dim=-1)
-        x = self.fusion(x)
+        combined_feat = torch.cat([card_feat, history_feat, context_feat], dim=-1)
+        
+        # 自注意力处理
+        attn_out, _ = self.self_attention(
+            combined_feat.unsqueeze(1),
+            combined_feat.unsqueeze(1),
+            combined_feat.unsqueeze(1)
+        )
+        combined_feat = combined_feat + attn_out.squeeze(1)  # 残差连接
+        
+        x = self.fusion(combined_feat)
         
         # 残差处理
         for res_block in self.res_blocks:
@@ -541,21 +550,28 @@ def run_training(episodes=30000):
     """改进的训练流程 - 添加课程学习和目标网络"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # 自适应训练参数
     adaptive_params = {
-        'min_batch_size': 64,   # 降低最小batch size
-        'max_batch_size': 128,  # 降低最大batch size
-        'batch_growth_interval': 500,  # 延长增长间隔
-        'current_batch_size': 64,  # 降低初始batch size
-        'growth_step': 32  # 减小增长步长
+        'min_batch_size': 128,  # 增加最小batch size
+        'max_batch_size': 2048,  # 增加最大batch size
+        'batch_growth_interval': 128,  # 更频繁地增加batch size
+        'current_batch_size': 128,
+        'growth_step': 32
     }
     
-    # 动态课程学习配置
+    # 改进的课程学习
     def get_curriculum(ep, win_rate):
-        if win_rate < 0.4:
-            return {'level': (2,5), 'opponent': 'random'}
-        elif 0.4 <= win_rate < 0.7:
-            return {'level': (5,8), 'opponent': 'rule_based'}
+        if ep < 1000:  # 延长初始训练阶段
+            return {'level': (2,4), 'opponent': 'random'}
+        elif ep < 3000:
+            if win_rate < 0.45:
+                return {'level': (3,6), 'opponent': 'random'}
+            else:
+                return {'level': (4,7), 'opponent': 'rule_based'}
+        elif ep < 6000:
+            if win_rate < 0.55:
+                return {'level': (5,8), 'opponent': 'rule_based'}
+            else:
+                return {'level': (6,10), 'opponent': 'self'}
         else:
             return {'level': (8,14), 'opponent': 'self'}
     
@@ -579,10 +595,11 @@ def run_training(episodes=30000):
     optimizer_params = [
         {'params': [p for n,p in actor.named_parameters() 
                 if not n.startswith('backbone.')],
-        'lr': 2e-4},  # 提高actor学习率
+         'lr': 3e-4,
+         'weight_decay': 1e-4},
         {'params': [p for n,p in critic.named_parameters()
                 if not n.startswith('backbone.')],
-        'lr': 1e-4},  # 降低critic学习率
+        'lr': 1.5e-4},  # 降低critic学习率
         {'params': backbone.parameters(),
         'lr': 5e-5}   # 降低backbone学习率
     ]
