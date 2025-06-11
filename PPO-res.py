@@ -5,7 +5,6 @@
 
 import os
 import sys
-import concurrent.futures
 import math
 import numpy as np
 from pathlib import Path
@@ -49,7 +48,7 @@ logging.info(f"使用设备: {device}")
 
 class ReplayBuffer:
     """存储训练样本的循环缓冲区"""
-    def __init__(self, capacity=30000):
+    def __init__(self, capacity=10000):
         self.buffer = []  # 存储样本的列表
         self.capacity = capacity # 最大容量
         self.position = 0
@@ -62,74 +61,13 @@ class ReplayBuffer:
         self.position = (self.position + 1) % self.capacity
         
     def sample(self, batch_size):
-        """优化后的采样方法"""
-        # 预分配CPU内存池
-        states = np.empty((batch_size, *self.buffer[0][0].shape), dtype=np.float32)
-        actions = np.empty(batch_size, dtype=np.int64)
-        rewards = np.empty(batch_size, dtype=np.float32)
-        next_states = np.empty((batch_size, *self.buffer[0][3].shape), dtype=np.float32)
-        dones = np.empty(batch_size, dtype=np.bool_)
-        log_probs = np.empty(batch_size, dtype=np.float32)
-        
-        # 批量填充CPU数据
-        indices = np.random.choice(len(self.buffer), batch_size, replace=False)
-        for i, idx in enumerate(indices):
-            state, action, reward, next_state, done, log_prob = self.buffer[idx]
-            states[i] = state
-            actions[i] = action
-            rewards[i] = reward
-            next_states[i] = next_state
-            dones[i] = done
-            log_probs[i] = log_prob
-        
-        # 使用CUDA异步传输
-        stream = torch.cuda.Stream()
-        with torch.cuda.stream(stream):
-            states_t = torch.as_tensor(states, device='cuda', 
-                                     pin_memory=True).to(non_blocking=True)
-            actions_t = torch.as_tensor(actions, device='cuda',
-                                      pin_memory=True).to(non_blocking=True)
-            rewards_t = torch.as_tensor(rewards, device='cuda',
-                                      pin_memory=True).to(non_blocking=True)
-            next_states_t = torch.as_tensor(next_states, device='cuda',
-                                          pin_memory=True).to(non_blocking=True)
-            dones_t = torch.as_tensor(dones, device='cuda',
-                                    pin_memory=True).to(non_blocking=True)
-            log_probs_t = torch.as_tensor(log_probs, device='cuda',
-                                         pin_memory=True).to(non_blocking=True)
-        
+        """随机采样一批样本"""
+        batch = random.sample(self.buffer, min(batch_size, len(self.buffer)))
+        states, actions, rewards, next_states, dones, log_probs = map(np.stack, zip(*batch))
         return states, actions, rewards, next_states, dones, log_probs
         
     def __len__(self):
         return len(self.buffer)
-
-class ResidualBlock(nn.Module):
-    """残差块结构，缓解深层网络梯度消失"""
-    def __init__(self, in_dim, out_dim, dropout_rate=0.1):
-        super().__init__()
-        self.fc1 = nn.Linear(in_dim, out_dim)
-        self.bn1 = nn.BatchNorm1d(out_dim)
-        self.ln1 = nn.LayerNorm(out_dim)
-        self.fc2 = nn.Linear(out_dim, out_dim)
-        self.bn2 = nn.BatchNorm1d(out_dim)
-        self.ln2 = nn.LayerNorm(out_dim)
-        self.dropout = nn.Dropout(dropout_rate)
-        self.shortcut = nn.Sequential() # 捷径连接
-        
-        if in_dim != out_dim: # 维度不匹配时使用投影
-            self.shortcut = nn.Sequential(
-                nn.Linear(in_dim, out_dim),
-                nn.BatchNorm1d(out_dim),
-                nn.LayerNorm(out_dim)
-            )
-            
-    def forward(self, x):
-        residual = self.shortcut(x)
-        out = F.leaky_relu(self.ln1(self.bn1(self.fc1(x))), 0.1)
-        out = self.dropout(out)
-        out = self.ln2(self.bn2(self.fc2(out)))
-        out += residual
-        return F.leaky_relu(out, 0.1)
 
 # 修改SharedBackbone类
 class SharedBackbone(nn.Module):
@@ -167,15 +105,15 @@ class SharedBackbone(nn.Module):
         # Transformer编码器
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=hidden_dim,
-            nhead=8,
-            dim_feedforward=2048,
+            nhead=4,  # 减少注意力头数
+            dim_feedforward=1024,  # 减小前馈层维度
             dropout=0.1,
             activation='gelu',
             batch_first=True
         )
         self.transformer_encoder = nn.TransformerEncoder(
             encoder_layer,
-            num_layers=3
+            num_layers=3  # 减少Transformer层数
         )
         
         # 位置编码
@@ -195,30 +133,29 @@ class SharedBackbone(nn.Module):
         )
 
     def forward(self, x):
-        with torch.amp.autocast(device_type='cuda' if torch.cuda.is_available() else 'cpu'):
-            x = self.input_bn(x)
-            
-            # 提取各特征
-            card_feat = self.card_encoder(x[..., :108])  # [B, 512]
-            history_feat = self.history_encoder(x[..., 108:2268])  # [B, 512]
-            context_feat = self.context_encoder(x[..., 2268:])  # [B, 256]
-            
-            # 投影到统一维度
-            card_feat = F.linear(card_feat, torch.zeros(self.hidden_dim, 512).to(x.device))
-            history_feat = F.linear(history_feat, torch.zeros(self.hidden_dim, 512).to(x.device))
-            context_feat = F.linear(context_feat, torch.zeros(self.hidden_dim, 256).to(x.device))
-            
-            # 添加分类token和位置编码
-            cls_tokens = self.cls_token.expand(x.shape[0], -1, -1)  # [B, 1, D]
-            features = torch.stack([card_feat, history_feat, context_feat], dim=1)  # [B, 3, D]
-            features = features + self.position_embedding
-            features = torch.cat([cls_tokens, features], dim=1)  # [B, 4, D]
-            
-            # Transformer处理
-            features = self.transformer_encoder(features)
-            
-            # 取分类token作为输出
-            out = self.proj(features[:, 0])
+        x = self.input_bn(x)
+        
+        # 提取各特征
+        card_feat = self.card_encoder(x[..., :108])  # [B, 512]
+        history_feat = self.history_encoder(x[..., 108:2268])  # [B, 512]
+        context_feat = self.context_encoder(x[..., 2268:])  # [B, 256]
+        
+        # 投影到统一维度
+        card_feat = F.linear(card_feat, torch.zeros(self.hidden_dim, 512).to(x.device))
+        history_feat = F.linear(history_feat, torch.zeros(self.hidden_dim, 512).to(x.device))
+        context_feat = F.linear(context_feat, torch.zeros(self.hidden_dim, 256).to(x.device))
+        
+        # 添加分类token和位置编码
+        cls_tokens = self.cls_token.expand(x.shape[0], -1, -1)  # [B, 1, D]
+        features = torch.stack([card_feat, history_feat, context_feat], dim=1)  # [B, 3, D]
+        features = features + self.position_embedding
+        features = torch.cat([cls_tokens, features], dim=1)  # [B, 4, D]
+        
+        # Transformer处理
+        features = self.transformer_encoder(features)
+        
+        # 取分类token作为输出
+        out = self.proj(features[:, 0])
         
         return out
     
@@ -257,7 +194,6 @@ class ImprovedResNetActor(nn.Module):
         logits = self.fc_policy(features)
         
         # 动态Pass抑制 - 根据训练阶段调整
-        
         if self.training:
             pass_penalty = 1.2  # 训练时中等抑制
         else:
@@ -301,10 +237,15 @@ class ImprovedResNetCritic(nn.Module):
         value = self.fc_value(features)
         return value
 
+# 预分配GPU内存
+state_buf = torch.empty((1, 3049), dtype=torch.float32, device=device)
+mask_buf = torch.empty((1, 456), dtype=torch.float32, device=device)
+
 def select_action(actor, state, mask, device, is_free_turn, ep):
     """改进的动作选择策略4.0"""
-    state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(device)
-    mask_tensor = torch.tensor(mask, dtype=torch.float32).unsqueeze(0).to(device)
+    # 使用预分配缓冲区
+    state_buf.copy_(torch.from_numpy(state).view(1, -1))
+    mask_buf.copy_(torch.from_numpy(mask).view(1, -1))
     
     # 更平缓的探索衰减曲线
     explore_factor = max(0.15, 0.6 * (0.992 ** (ep // 50)))  # 衰减更慢
@@ -502,12 +443,12 @@ def train_on_batch_ppo(states, actions, rewards, next_states, dones, old_log_pro
                       backbone, actor, critic, target_critic, optimizer,
                       gamma=0.995, gae_lambda=0.95, device=device, ep=0):
     """优化后的PPO训练函数"""
-    states = states.to(device, non_blocking=True)
-    next_states = next_states.to(device, non_blocking=True)
-    actions = actions.to(device, non_blocking=True)
-    rewards = rewards.to(device, non_blocking=True)
-    dones = dones.to(device, non_blocking=True)
-    old_log_probs = old_log_probs.to(device, non_blocking=True)
+    states = torch.FloatTensor(states).to(device)
+    next_states = torch.FloatTensor(next_states).to(device)
+    actions = torch.LongTensor(actions).to(device)
+    rewards = torch.FloatTensor(rewards).to(device)
+    dones = torch.BoolTensor(dones).to(device)
+    old_log_probs = torch.FloatTensor(old_log_probs).to(device)
 
     # 标准化rewards
     rewards = torch.clamp(rewards, -5.0, 5.0)  # 先裁剪极端值
@@ -604,30 +545,14 @@ def train_on_batch_ppo(states, actions, rewards, next_states, dones, old_log_pro
 
 def run_training(episodes=30000):
     """改进的训练流程 - 添加课程学习和目标网络"""
-    # Enable parallel processing
-    torch.set_num_threads(16)  # Or number of CPU cores
-    num_workers = 12  # 根据CPU核心数设置，通常为CPU核心数的1/2到3/4
-    
-    torch.backends.cuda.matmul.allow_tf32 = True  # 启用TF32加速
-    torch.backends.cudnn.allow_tf32 = True
-
-    # 启用更激进的混合精度训练
-    scaler = torch.amp.GradScaler(
-        enabled=True,
-        init_scale=2.**11,  # 提高初始缩放因子
-        growth_factor=2.0,  # 更快的缩放增长
-        backoff_factor=0.5,
-        growth_interval=100
-    )
-    
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     adaptive_params = {
-        'min_batch_size': 4096,  # 增大最小batch size
-        'max_batch_size': 32768,  # 大幅提高最大batch size
-        'batch_growth_interval': 64,  # 更频繁调整
-        'current_batch_size': 4096,  # 更高的初始值
-        'growth_step': 256  # 更大的增长步长
+        'min_batch_size': 512,  # 增加最小batch size
+        'max_batch_size': 8192,  # 增加最大batch size
+        'batch_growth_interval': 128,  # 更频繁地增加batch size
+        'current_batch_size': 512,
+        'growth_step': 32
     }
     
     # 改进的课程学习
@@ -688,7 +613,7 @@ def run_training(episodes=30000):
         patience=150,    # 增加patience
         factor=0.95,     # 降低学习率衰减系数
         min_lr=5e-6,
-        verbose=False
+        verbose=True
     )
     
     memory = ReplayBuffer(capacity=10000)
@@ -701,20 +626,10 @@ def run_training(episodes=30000):
     value_loss = 0
     entropy = 0
     kl_div = 0
-
-    # 禁用梯度计算的环境交互
-    @torch.no_grad()
-    def collect_episode_data(game, device):
-        """优化后的数据收集函数"""
-        states, actions, rewards = [], [], []
-        while not game.is_game_over:
-            state = game._get_obs()
-            # ... 原有动作选择逻辑 ...
-            states.append(state)
-            actions.append(action_id)
-            rewards.append(reward)
-        return torch.stack(states), torch.tensor(actions), torch.tensor(rewards)
+    game_counter = 0  # 牌局计数器
     
+    consecutive_pass_rounds = 0
+        
     def soft_update(target, source, tau=0.001):
         for target_param, param in zip(target.parameters(), source.parameters()):
             target_param.data.copy_(
@@ -722,38 +637,34 @@ def run_training(episodes=30000):
             )
     try:
         for ep in range(initial_ep, initial_ep + episodes):
+            game_counter += 1
+            # 生成唯一的运行ID（基于时间戳）
+            run_id = datetime.now().strftime("%Y%m%d%H%M%S")
+            
+            game_id = f"{run_id}_{game_counter:04d}"  # 格式: 时间戳_序号
+
             game = GuandanGame(verbose=True)
             episode_reward = 0
             episode_steps = 0
             pass_penalty_given = False  # 防止多次惩罚
+            continue_rounds = 0
+            
             while not game.is_game_over and len(game.history) <= 200:
-                # 强化连续Pass检测和处理
-                if game.pass_count >= 2:  # 降低检测阈值
-                    # 记录连续Pass轮次
-                    consecutive_pass_rounds = game.pass_count
+                
+                # 跳过已经出完牌的玩家（即已经在排名中的玩家）
+                while game.current_player in game.ranking:
+                    game.current_player = (game.current_player + 1) % 4
+
+                continue_rounds = (continue_rounds+1)%2
+                if continue_rounds == 0:
+                    consecutive_pass_rounds = consecutive_pass_rounds+game.pass_count
+                else:
+                    consecutive_pass_rounds=game.pass_count
                     
-                    # 重置出牌权给最后出牌的玩家
-                    if game.last_player is not None:
-                        game.current_player = game.last_player
-                        game.log(f"玩家 {game.last_player + 1} 获得新一轮出牌权（连续{consecutive_pass_rounds}次Pass后）")
-                    
-                    # 应用全局惩罚（每轮Pass都惩罚）
-                    global_penalty = -0.5 * consecutive_pass_rounds
-                    if len(memory) > 0:
-                        memory.push(memory.buffer[-1][0], 0, global_penalty, 
-                                  memory.buffer[-1][0], False, 0.0)
-                        episode_reward += global_penalty
-                    
-                    # 重置状态
-                    game.last_play = []
-                    game.pass_count = 0
-                    game.recent_actions = [['None'] for _ in range(4)]
-                    continue
-    
                 # 检查连续4次Pass惩罚
-                if game.pass_count >= 4 and not pass_penalty_given:
+                if consecutive_pass_rounds > 4 and not pass_penalty_given:
                     # 对所有玩家（这里只训练主智能体，reward记录在memory）
-                    penalty = -2.0
+                    penalty = -1.0
                     # 仅对主智能体做记录
                     if len(memory) > 0:
                         memory.push(memory.buffer[-1][0], 0, penalty, memory.buffer[-1][0], False, 0.0)
@@ -766,19 +677,47 @@ def run_training(episodes=30000):
                     pass_penalty_given = True
                 else:
                     pass_penalty_given = False
+                    
+                # 当玩家A出牌完后，其余玩家都选择Pass，玩家A重新获得自由出牌权
+                if game.pass_count >= 3:
+                    # 记录连续Pass轮次
+                    consecutive_pass_rounds = game.pass_count
+                    
+                    # 重置出牌权给最后出牌的玩家（如果该玩家未出完牌）
+                    if game.last_player is not None:
+                        # 确保最后出牌的玩家没有出完牌
+                        if game.last_player not in game.ranking:
+                            game.current_player = game.last_player
+                            game.log(f"玩家 {game.last_player + 1} 获得新一轮出牌权（连续{consecutive_pass_rounds}次Pass后）")
+                        else:
+                            # 如果最后出牌的玩家已出完牌，则选择下一个未出完牌的玩家
+                            next_player = (game.last_player + 1) % 4
+                            while next_player in game.ranking:
+                                next_player = (next_player + 1) % 4
+                            game.current_player = next_player
+                            game.log(f"玩家 {next_player + 1} 获得新一轮出牌权（连续{consecutive_pass_rounds}次Pass后）")
+                    else:
+                        # 如果没有最后出牌的玩家，则按顺序找下一个未出完牌的玩家
+                        next_player = (game.current_player + 1) % 4
+                        while next_player in game.ranking:
+                            next_player = (next_player + 1) % 4
+                        game.current_player = next_player
+                        game.log(f"玩家 {next_player + 1} 获得新一轮出牌权（连续{consecutive_pass_rounds}次Pass后）")
+
+                    # 重置状态
+                    game.last_play = []
+                    game.pass_count = 0  # 重置Pass计数避免死循环
+                    game.recent_actions = [['None'] for _ in range(4)]
+                    game.is_free_turn = True
+                    continue
 
                 # 玩家0：训练中的PPO智能体（主训练对象）
                 # 玩家1-3：游戏内置的规则型AI对手
                 # 通过current_player轮转机制实现回合制出牌
                 if game.current_player == 0:
-                    # 使用缓存机制减少状态获取开销
-                    if not hasattr(game, 'cached_state'):
-                        game.cached_state = game._get_obs()
-                    state = game.cached_state
+                    state = game._get_obs() #玩家状态
                     state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(device)
-                    mask = torch.tensor(game.get_valid_action_mask(game.players[0].hand, M,
-                                                 game.active_level, game.last_play),
-                        dtype=torch.float32).unsqueeze(0).to(device) #获取有效动作
+                    mask = torch.tensor(game.get_valid_action_mask(game.players[0].hand, M,game.active_level, game.last_play), dtype=torch.float32).unsqueeze(0).to(device) #获取有效动作
                     mask = mask.squeeze(0) 
                     actor.eval()
                     with torch.no_grad():
@@ -801,37 +740,44 @@ def run_training(episodes=30000):
                     if combos:
                         chosen_move = random.choice(combos)
                         if not chosen_move:
-                            game.log(f"玩家 1 Pass")
+                            game.log(f"玩家 1 PPO Pass [局号: {game_id}]")
                             game.pass_count += 1
                             game.recent_actions[0] = ['Pass']
                         else:
+                            is_free_turn = False
                             game.last_play = chosen_move
                             game.last_player = 0
                             for card in chosen_move:
                                 player.played_cards.append(card)
                                 player.hand.remove(card)
-                            game.log(f"玩家 1 出牌: {' '.join(chosen_move)}")
+                            game.log(f"玩家 1 PPO 出牌: {' '.join(chosen_move)} [局号: {game_id}]")
                             game.recent_actions[0] = list(chosen_move)
                             game.jiefeng = False
                             if not player.hand:
-                                game.log(f"\n🎉 玩家 1 出完所有牌！\n")
+                                game.log(f"\n🎉 玩家 1 PPO 出完所有牌！[局号: {game_id}]\n")
                                 game.ranking.append(0)  # 玩家0的索引直接使用0
-                                # 立即结束当前玩家回合
                                 game.is_game_over = len(game.ranking) >= 4
                                 game.pass_count = 0
-                                break  # 跳出当前回合循环
+                                
+                                # 双重确认：确保手牌确实为空
+                                if player.hand:
+                                    game.log(f"⚠️ 警告：玩家1PPO手牌非空但被判定为空！手牌: {' '.join(player.hand)}")
+                                else:
+                                    # 轮转玩家并跳出循环
+                                    game.current_player = (game.current_player + 1) % 4
+                                    break  # 跳出当前回合循环
                                 
                             game.pass_count = 0
                             # 移除重复的hand检查
                             if game.is_free_turn:
                                 game.is_free_turn = False
                     else:
-                        game.log(f"玩家 1 Pass")
+                        game.log(f"玩家 1  PPO Pass [局号: {game_id}]")
                         game.pass_count += 1
                         game.recent_actions[0] = ['Pass']
+                        
                     next_state = game._get_obs()
-                    reward = calculate_improved_reward(entry, player, mask, action_id, 
-                                                    hand_size_before, game, ep)
+                    reward = calculate_improved_reward(entry, player, mask, action_id, hand_size_before, game, ep)
                     episode_reward += reward
                     memory.push(state, action_id, reward, next_state, game.is_game_over, log_prob.item())
                     player.last_played_cards = game.recent_actions[0]
@@ -884,19 +830,15 @@ def run_training(episodes=30000):
                     states, actions, rewards, next_states, dones, old_log_probs = memory.sample(
                         adaptive_params['current_batch_size']
                     )
-                    # 使用混合精度训练
-                    with torch.amp.autocast(device_type='cuda' if torch.cuda.is_available() else 'cpu'):
-                        policy_loss, value_loss, entropy, kl_div = train_on_batch_ppo(
-                            states, actions, rewards, next_states, dones, old_log_probs,
-                            backbone, actor, critic, target_critic, optimizer,
-                            gamma=0.995, gae_lambda=0.95, device=device, ep=ep
-                        )
-                # 每100步更新一次目标网络
-                if episode_steps % 100 == 0:
-                    with torch.no_grad():
-                        soft_update(target_backbone, backbone, tau=0.01)
-                        soft_update(target_critic, critic, tau=0.01)
-                        
+                    # 添加训练步骤并接收返回值
+                    policy_loss, value_loss, entropy, kl_div = train_on_batch_ppo(
+                        states, actions, rewards, next_states, dones, old_log_probs,
+                        backbone, actor, critic, target_critic, optimizer,
+                        gamma=0.99, gae_lambda=0.97, device=device, ep=ep
+                    )
+                    
+                soft_update(target_backbone, backbone)
+                soft_update(target_critic, critic)
                 scheduler.step(policy_loss)
                 writer.add_scalar('Training/PolicyLoss', policy_loss, ep)
                 writer.add_scalar('Training/ValueLoss', value_loss, ep)
