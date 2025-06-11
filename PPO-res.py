@@ -5,6 +5,7 @@
 
 import os
 import sys
+import concurrent.futures
 import math
 import numpy as np
 from pathlib import Path
@@ -62,8 +63,21 @@ class ReplayBuffer:
         
     def sample(self, batch_size):
         """随机采样一批样本"""
-        batch = random.sample(self.buffer, min(batch_size, len(self.buffer)))
-        states, actions, rewards, next_states, dones, log_probs = map(np.stack, zip(*batch))
+        # 使用多进程加速采样
+        indices = random.sample(range(len(self.buffer)), min(batch_size, len(self.buffer)))
+        batch = [self.buffer[i] for i in indices]
+        
+        num_workers=12
+        # 并行处理数据转换
+        with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
+            states, actions, rewards, next_states, dones, log_probs = zip(*batch)
+            states = torch.tensor(np.stack(states), dtype=torch.float32).pin_memory()
+            actions = torch.tensor(np.stack(actions), dtype=torch.long).pin_memory()
+            rewards = torch.tensor(np.stack(rewards), dtype=torch.float32).pin_memory()
+            next_states = torch.tensor(np.stack(next_states), dtype=torch.float32).pin_memory()
+            dones = torch.tensor(np.stack(dones), dtype=torch.bool).pin_memory()
+            log_probs = torch.tensor(np.stack(log_probs), dtype=torch.float32).pin_memory()
+        
         return states, actions, rewards, next_states, dones, log_probs
         
     def __len__(self):
@@ -467,12 +481,12 @@ def train_on_batch_ppo(states, actions, rewards, next_states, dones, old_log_pro
                       backbone, actor, critic, target_critic, optimizer,
                       gamma=0.995, gae_lambda=0.95, device=device, ep=0):
     """优化后的PPO训练函数"""
-    states = torch.FloatTensor(states).to(device)
-    next_states = torch.FloatTensor(next_states).to(device)
-    actions = torch.LongTensor(actions).to(device)
-    rewards = torch.FloatTensor(rewards).to(device)
-    dones = torch.BoolTensor(dones).to(device)
-    old_log_probs = torch.FloatTensor(old_log_probs).to(device)
+    states = states.to(device, non_blocking=True)
+    next_states = next_states.to(device, non_blocking=True)
+    actions = actions.to(device, non_blocking=True)
+    rewards = rewards.to(device, non_blocking=True)
+    dones = dones.to(device, non_blocking=True)
+    old_log_probs = old_log_probs.to(device, non_blocking=True)
 
     # 标准化rewards
     rewards = torch.clamp(rewards, -5.0, 5.0)  # 先裁剪极端值
@@ -569,19 +583,21 @@ def train_on_batch_ppo(states, actions, rewards, next_states, dones, old_log_pro
 
 def run_training(episodes=30000):
     """改进的训练流程 - 添加课程学习和目标网络"""
+    # Enable parallel processing
+    torch.set_num_threads(16)  # Or number of CPU cores
+    num_workers = 12  # 根据CPU核心数设置，通常为CPU核心数的1/2到3/4
+    
+    # 启用混合精度训练
+    scaler = torch.amp.GradScaler(enabled=True)
+    
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # 优化线程设置
-    torch.set_num_threads(1)  # 限制PyTorch使用单线程
-    os.environ['OMP_NUM_THREADS'] = '1'  # 禁用OpenMP多线程
-    os.environ['MKL_NUM_THREADS'] = '1'  # 禁用MKL多线程
-    
     adaptive_params = {
-        'min_batch_size': 256,  # 增加最小batch size
-        'max_batch_size': 4096,  # 增加最大batch size
-        'batch_growth_interval': 128,  # 更频繁地增加batch size
-        'current_batch_size': 512,
-        'growth_step': 128
+        'min_batch_size': 128,  # 减小最小batch size
+        'max_batch_size': 2048,  # 减小最大batch size
+        'batch_growth_interval': 256,  # 减少batch size增长频率
+        'current_batch_size': 256,
+        'growth_step': 64
     }
     
     # 改进的课程学习
@@ -642,7 +658,7 @@ def run_training(episodes=30000):
         patience=150,    # 增加patience
         factor=0.95,     # 降低学习率衰减系数
         min_lr=5e-6,
-        verbose=True
+        verbose=False
     )
     
     memory = ReplayBuffer(capacity=10000)
@@ -835,12 +851,13 @@ def run_training(episodes=30000):
                     states, actions, rewards, next_states, dones, old_log_probs = memory.sample(
                         adaptive_params['current_batch_size']
                     )
-                    # 添加训练步骤并接收返回值
-                    policy_loss, value_loss, entropy, kl_div = train_on_batch_ppo(
-                        states, actions, rewards, next_states, dones, old_log_probs,
-                        backbone, actor, critic, target_critic, optimizer,
-                        gamma=0.995, gae_lambda=0.95, device=device, ep=ep
-                    )
+                    # 使用混合精度训练
+                    with torch.amp.autocast(device_type='cuda' if torch.cuda.is_available() else 'cpu'):
+                        policy_loss, value_loss, entropy, kl_div = train_on_batch_ppo(
+                            states, actions, rewards, next_states, dones, old_log_probs,
+                            backbone, actor, critic, target_critic, optimizer,
+                            gamma=0.995, gae_lambda=0.95, device=device, ep=ep
+                        )
                     
                 soft_update(target_backbone, backbone)
                 soft_update(target_critic, critic)
@@ -851,7 +868,6 @@ def run_training(episodes=30000):
                 writer.add_scalar('Training/KLDivergence', kl_div, ep)
                 writer.add_scalar('Training/EpisodeReward', episode_reward, ep)
                 writer.add_scalar('Training/EpisodeSteps', episode_steps, ep)
-                writer.add_scalar('Gradients/Backbone', avg_grad_norm, ep)
                 for i, param_group in enumerate(optimizer.param_groups):
                     writer.add_scalar(f'Training/LR_group_{i}', param_group['lr'], ep)
                     
