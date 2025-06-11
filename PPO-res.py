@@ -48,7 +48,7 @@ logging.info(f"使用设备: {device}")
 
 class ReplayBuffer:
     """存储训练样本的循环缓冲区"""
-    def __init__(self, capacity=10000):
+    def __init__(self, capacity=30000):
         self.buffer = []  # 存储样本的列表
         self.capacity = capacity # 最大容量
         self.position = 0
@@ -103,91 +103,89 @@ class SharedBackbone(nn.Module):
         super().__init__()
         
         self.input_bn = nn.BatchNorm1d(state_dim)
+        self.hidden_dim=hidden_dim
         self.eval_mode = False
         
-        # 改进的手牌编码器
+        # 手牌编码器
         self.card_encoder = nn.Sequential(
             nn.Linear(108, 512),
             nn.LayerNorm(512),
-            nn.GELU(),  # 使用GELU替代LeakyReLU
-            nn.Dropout(0.2),
-            nn.Linear(512, 512),
-            nn.LayerNorm(512),
-            nn.GELU()
-        )
-        
-        # 改进的历史动作编码器
-        self.history_encoder = nn.LSTM(
-            input_size=2160,
-            hidden_size=512,
-            num_layers=3,  # 增加层数
-            batch_first=True,
-            dropout=0.2,
-            bidirectional=True
-        )
-        
-        # 改进的场景信息编码器
-        self.context_encoder = nn.Sequential(
-            nn.Linear(781, 384),
-            nn.LayerNorm(384),
-            nn.GELU(),
-            nn.Dropout(0.2),
-            nn.Linear(384, 256),
-            nn.LayerNorm(256),
-            nn.GELU()
-        )
-        
-        # 多头注意力层
-        self.self_attention = nn.MultiheadAttention(
-            embed_dim=512+1024+256,
-            num_heads=8,
-            dropout=0.1,
-            batch_first=True
-        )
-        
-        # 改进的融合层
-        self.fusion = nn.Sequential(
-            nn.Linear(512+1024+256, hidden_dim),
-            nn.LayerNorm(hidden_dim),
             nn.GELU(),
             nn.Dropout(0.2)
         )
         
-        # 更深的残差块
-        self.res_blocks = nn.ModuleList([
-            ResidualBlock(hidden_dim, hidden_dim, dropout_rate=0.2)
-            for _ in range(4)  # 增加残差块数量
-        ])
+        # 历史动作编码器
+        self.history_encoder = nn.Sequential(
+            nn.Linear(2160, 512),
+            nn.LayerNorm(512),
+            nn.GELU(),
+            nn.Dropout(0.2)
+        )
+        
+        # 场景信息编码器
+        self.context_encoder = nn.Sequential(
+            nn.Linear(781, 256),
+            nn.LayerNorm(256),
+            nn.GELU(),
+            nn.Dropout(0.2)
+        )
+        
+        # Transformer编码器
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=hidden_dim,
+            nhead=8,
+            dim_feedforward=2048,
+            dropout=0.1,
+            activation='gelu',
+            batch_first=True
+        )
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=6
+        )
+        
+        # 位置编码
+        self.position_embedding = nn.Parameter(
+            torch.randn(1, 3, hidden_dim) * 0.02
+        )
+        
+        # 分类token
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, hidden_dim))
+        
+        # 输出投影层
+        self.proj = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Dropout(0.1)
+        )
 
     def forward(self, x):
         x = self.input_bn(x)
         
-        # 特征提取
-        card_feat = self.card_encoder(x[..., :108])
+        # 提取各特征
+        card_feat = self.card_encoder(x[..., :108])  # [B, 512]
+        history_feat = self.history_encoder(x[..., 108:2268])  # [B, 512]
+        context_feat = self.context_encoder(x[..., 2268:])  # [B, 256]
         
-        history_feat, _ = self.history_encoder(x[..., 108:2268].unsqueeze(1))
-        history_feat = history_feat.squeeze(1)
+        # 投影到统一维度
+        card_feat = F.linear(card_feat, torch.zeros(self.hidden_dim, 512).to(x.device))
+        history_feat = F.linear(history_feat, torch.zeros(self.hidden_dim, 512).to(x.device))
+        context_feat = F.linear(context_feat, torch.zeros(self.hidden_dim, 256).to(x.device))
         
-        context_feat = self.context_encoder(x[..., 2268:])
+        # 添加分类token和位置编码
+        cls_tokens = self.cls_token.expand(x.shape[0], -1, -1)  # [B, 1, D]
+        features = torch.stack([card_feat, history_feat, context_feat], dim=1)  # [B, 3, D]
+        features = features + self.position_embedding
+        features = torch.cat([cls_tokens, features], dim=1)  # [B, 4, D]
         
-        # 特征融合
-        combined_feat = torch.cat([card_feat, history_feat, context_feat], dim=-1)
+        # Transformer处理
+        features = self.transformer_encoder(features)
         
-        # 自注意力处理
-        attn_out, _ = self.self_attention(
-            combined_feat.unsqueeze(1),
-            combined_feat.unsqueeze(1),
-            combined_feat.unsqueeze(1)
-        )
-        combined_feat = combined_feat + attn_out.squeeze(1)  # 残差连接
+        # 取分类token作为输出
+        out = self.proj(features[:, 0])
         
-        x = self.fusion(combined_feat)
-        
-        # 残差处理
-        for res_block in self.res_blocks:
-            x = res_block(x)
-            
-        return x
+        return out
     
     def eval(self):
         """设置评估模式"""
@@ -204,7 +202,7 @@ class ImprovedResNetActor(nn.Module):
     def __init__(self, backbone, action_dim=action_dim):
         super().__init__()
         self.backbone = backbone
-        backbone_out_dim = backbone.res_blocks[-1].fc2.out_features
+        backbone_out_dim = backbone.hidden_dim  # 使用Transformer的隐藏维度
         
         # 更深的策略头
         self.fc_policy = nn.Sequential(
@@ -224,6 +222,7 @@ class ImprovedResNetActor(nn.Module):
         logits = self.fc_policy(features)
         
         # 动态Pass抑制 - 根据训练阶段调整
+        
         if self.training:
             pass_penalty = 1.2  # 训练时中等抑制
         else:
@@ -243,7 +242,7 @@ class ImprovedResNetCritic(nn.Module):
     def __init__(self, backbone):
         super().__init__()
         self.backbone = backbone
-        backbone_out_dim = backbone.res_blocks[-1].fc2.out_features
+        backbone_out_dim = backbone.hidden_dim  # 使用Transformer的隐藏维度
         self.fc_value = nn.Sequential(
             nn.Linear(backbone_out_dim, backbone_out_dim//2),
             nn.LayerNorm(backbone_out_dim//2),
@@ -572,12 +571,17 @@ def run_training(episodes=30000):
     """改进的训练流程 - 添加课程学习和目标网络"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
+    # 优化线程设置
+    torch.set_num_threads(1)  # 限制PyTorch使用单线程
+    os.environ['OMP_NUM_THREADS'] = '1'  # 禁用OpenMP多线程
+    os.environ['MKL_NUM_THREADS'] = '1'  # 禁用MKL多线程
+    
     adaptive_params = {
-        'min_batch_size': 512,  # 增大初始batch size
-        'max_batch_size': 8192,  # 增大最大batch size
-        'batch_growth_interval': 64,  # 更频繁调整
+        'min_batch_size': 256,  # 增加最小batch size
+        'max_batch_size': 4096,  # 增加最大batch size
+        'batch_growth_interval': 128,  # 更频繁地增加batch size
         'current_batch_size': 512,
-        'growth_step': 128  # 增大增长步长
+        'growth_step': 128
     }
     
     # 改进的课程学习
@@ -651,8 +655,21 @@ def run_training(episodes=30000):
     value_loss = 0
     entropy = 0
     kl_div = 0
+
+    # 禁用梯度计算的环境交互
+    @torch.no_grad()
+    def collect_episode_data(game, device):
+        """优化后的数据收集函数"""
+        states, actions, rewards = [], [], []
+        while not game.is_game_over:
+            state = game._get_obs()
+            # ... 原有动作选择逻辑 ...
+            states.append(state)
+            actions.append(action_id)
+            rewards.append(reward)
+        return torch.stack(states), torch.tensor(actions), torch.tensor(rewards)
     
-    def soft_update(target, source, tau=0.005):
+    def soft_update(target, source, tau=0.001):
         for target_param, param in zip(target.parameters(), source.parameters()):
             target_param.data.copy_(
                 target_param.data * (1.0 - tau) + param.data * tau
@@ -822,7 +839,7 @@ def run_training(episodes=30000):
                     policy_loss, value_loss, entropy, kl_div = train_on_batch_ppo(
                         states, actions, rewards, next_states, dones, old_log_probs,
                         backbone, actor, critic, target_critic, optimizer,
-                        gamma=0.99, gae_lambda=0.97, device=device, ep=ep
+                        gamma=0.995, gae_lambda=0.95, device=device, ep=ep
                     )
                     
                 soft_update(target_backbone, backbone)
@@ -834,6 +851,7 @@ def run_training(episodes=30000):
                 writer.add_scalar('Training/KLDivergence', kl_div, ep)
                 writer.add_scalar('Training/EpisodeReward', episode_reward, ep)
                 writer.add_scalar('Training/EpisodeSteps', episode_steps, ep)
+                writer.add_scalar('Gradients/Backbone', avg_grad_norm, ep)
                 for i, param_group in enumerate(optimizer.param_groups):
                     writer.add_scalar(f'Training/LR_group_{i}', param_group['lr'], ep)
                     
