@@ -62,21 +62,41 @@ class ReplayBuffer:
         self.position = (self.position + 1) % self.capacity
         
     def sample(self, batch_size):
-        """随机采样一批样本"""
-        # 使用多进程加速采样
-        indices = random.sample(range(len(self.buffer)), min(batch_size, len(self.buffer)))
-        batch = [self.buffer[i] for i in indices]
+        """优化后的采样方法"""
+        # 预分配CPU内存池
+        states = np.empty((batch_size, *self.buffer[0][0].shape), dtype=np.float32)
+        actions = np.empty(batch_size, dtype=np.int64)
+        rewards = np.empty(batch_size, dtype=np.float32)
+        next_states = np.empty((batch_size, *self.buffer[0][3].shape), dtype=np.float32)
+        dones = np.empty(batch_size, dtype=np.bool_)
+        log_probs = np.empty(batch_size, dtype=np.float32)
         
-        num_workers=12
-        # 并行处理数据转换
-        with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
-            states, actions, rewards, next_states, dones, log_probs = zip(*batch)
-            states = torch.tensor(np.stack(states), dtype=torch.float32).pin_memory()
-            actions = torch.tensor(np.stack(actions), dtype=torch.long).pin_memory()
-            rewards = torch.tensor(np.stack(rewards), dtype=torch.float32).pin_memory()
-            next_states = torch.tensor(np.stack(next_states), dtype=torch.float32).pin_memory()
-            dones = torch.tensor(np.stack(dones), dtype=torch.bool).pin_memory()
-            log_probs = torch.tensor(np.stack(log_probs), dtype=torch.float32).pin_memory()
+        # 批量填充CPU数据
+        indices = np.random.choice(len(self.buffer), batch_size, replace=False)
+        for i, idx in enumerate(indices):
+            state, action, reward, next_state, done, log_prob = self.buffer[idx]
+            states[i] = state
+            actions[i] = action
+            rewards[i] = reward
+            next_states[i] = next_state
+            dones[i] = done
+            log_probs[i] = log_prob
+        
+        # 使用CUDA异步传输
+        stream = torch.cuda.Stream()
+        with torch.cuda.stream(stream):
+            states_t = torch.as_tensor(states, device='cuda', 
+                                     pin_memory=True).to(non_blocking=True)
+            actions_t = torch.as_tensor(actions, device='cuda',
+                                      pin_memory=True).to(non_blocking=True)
+            rewards_t = torch.as_tensor(rewards, device='cuda',
+                                      pin_memory=True).to(non_blocking=True)
+            next_states_t = torch.as_tensor(next_states, device='cuda',
+                                          pin_memory=True).to(non_blocking=True)
+            dones_t = torch.as_tensor(dones, device='cuda',
+                                    pin_memory=True).to(non_blocking=True)
+            log_probs_t = torch.as_tensor(log_probs, device='cuda',
+                                         pin_memory=True).to(non_blocking=True)
         
         return states, actions, rewards, next_states, dones, log_probs
         
@@ -155,7 +175,7 @@ class SharedBackbone(nn.Module):
         )
         self.transformer_encoder = nn.TransformerEncoder(
             encoder_layer,
-            num_layers=6
+            num_layers=3
         )
         
         # 位置编码
@@ -175,29 +195,30 @@ class SharedBackbone(nn.Module):
         )
 
     def forward(self, x):
-        x = self.input_bn(x)
-        
-        # 提取各特征
-        card_feat = self.card_encoder(x[..., :108])  # [B, 512]
-        history_feat = self.history_encoder(x[..., 108:2268])  # [B, 512]
-        context_feat = self.context_encoder(x[..., 2268:])  # [B, 256]
-        
-        # 投影到统一维度
-        card_feat = F.linear(card_feat, torch.zeros(self.hidden_dim, 512).to(x.device))
-        history_feat = F.linear(history_feat, torch.zeros(self.hidden_dim, 512).to(x.device))
-        context_feat = F.linear(context_feat, torch.zeros(self.hidden_dim, 256).to(x.device))
-        
-        # 添加分类token和位置编码
-        cls_tokens = self.cls_token.expand(x.shape[0], -1, -1)  # [B, 1, D]
-        features = torch.stack([card_feat, history_feat, context_feat], dim=1)  # [B, 3, D]
-        features = features + self.position_embedding
-        features = torch.cat([cls_tokens, features], dim=1)  # [B, 4, D]
-        
-        # Transformer处理
-        features = self.transformer_encoder(features)
-        
-        # 取分类token作为输出
-        out = self.proj(features[:, 0])
+        with torch.amp.autocast(device_type='cuda' if torch.cuda.is_available() else 'cpu'):
+            x = self.input_bn(x)
+            
+            # 提取各特征
+            card_feat = self.card_encoder(x[..., :108])  # [B, 512]
+            history_feat = self.history_encoder(x[..., 108:2268])  # [B, 512]
+            context_feat = self.context_encoder(x[..., 2268:])  # [B, 256]
+            
+            # 投影到统一维度
+            card_feat = F.linear(card_feat, torch.zeros(self.hidden_dim, 512).to(x.device))
+            history_feat = F.linear(history_feat, torch.zeros(self.hidden_dim, 512).to(x.device))
+            context_feat = F.linear(context_feat, torch.zeros(self.hidden_dim, 256).to(x.device))
+            
+            # 添加分类token和位置编码
+            cls_tokens = self.cls_token.expand(x.shape[0], -1, -1)  # [B, 1, D]
+            features = torch.stack([card_feat, history_feat, context_feat], dim=1)  # [B, 3, D]
+            features = features + self.position_embedding
+            features = torch.cat([cls_tokens, features], dim=1)  # [B, 4, D]
+            
+            # Transformer处理
+            features = self.transformer_encoder(features)
+            
+            # 取分类token作为输出
+            out = self.proj(features[:, 0])
         
         return out
     
@@ -587,17 +608,26 @@ def run_training(episodes=30000):
     torch.set_num_threads(16)  # Or number of CPU cores
     num_workers = 12  # 根据CPU核心数设置，通常为CPU核心数的1/2到3/4
     
-    # 启用混合精度训练
-    scaler = torch.amp.GradScaler(enabled=True)
+    torch.backends.cuda.matmul.allow_tf32 = True  # 启用TF32加速
+    torch.backends.cudnn.allow_tf32 = True
+
+    # 启用更激进的混合精度训练
+    scaler = torch.amp.GradScaler(
+        enabled=True,
+        init_scale=2.**11,  # 提高初始缩放因子
+        growth_factor=2.0,  # 更快的缩放增长
+        backoff_factor=0.5,
+        growth_interval=100
+    )
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     adaptive_params = {
-        'min_batch_size': 128,  # 减小最小batch size
-        'max_batch_size': 2048,  # 减小最大batch size
-        'batch_growth_interval': 256,  # 减少batch size增长频率
-        'current_batch_size': 256,
-        'growth_step': 64
+        'min_batch_size': 4096,  # 增大最小batch size
+        'max_batch_size': 32768,  # 大幅提高最大batch size
+        'batch_growth_interval': 64,  # 更频繁调整
+        'current_batch_size': 4096,  # 更高的初始值
+        'growth_step': 256  # 更大的增长步长
     }
     
     # 改进的课程学习
@@ -741,7 +771,10 @@ def run_training(episodes=30000):
                 # 玩家1-3：游戏内置的规则型AI对手
                 # 通过current_player轮转机制实现回合制出牌
                 if game.current_player == 0:
-                    state = game._get_obs() #玩家状态
+                    # 使用缓存机制减少状态获取开销
+                    if not hasattr(game, 'cached_state'):
+                        game.cached_state = game._get_obs()
+                    state = game.cached_state
                     state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(device)
                     mask = torch.tensor(game.get_valid_action_mask(game.players[0].hand, M,
                                                  game.active_level, game.last_play),
@@ -858,9 +891,12 @@ def run_training(episodes=30000):
                             backbone, actor, critic, target_critic, optimizer,
                             gamma=0.995, gae_lambda=0.95, device=device, ep=ep
                         )
-                    
-                soft_update(target_backbone, backbone)
-                soft_update(target_critic, critic)
+                # 每100步更新一次目标网络
+                if episode_steps % 100 == 0:
+                    with torch.no_grad():
+                        soft_update(target_backbone, backbone, tau=0.01)
+                        soft_update(target_critic, critic, tau=0.01)
+                        
                 scheduler.step(policy_loss)
                 writer.add_scalar('Training/PolicyLoss', policy_loss, ep)
                 writer.add_scalar('Training/ValueLoss', value_loss, ep)
