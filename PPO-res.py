@@ -56,7 +56,7 @@ class ReplayBuffer:
         self.buffer = []  # 存储样本的列表
         self.capacity = capacity # 最大容量
         self.position = 0
-        self.lock = threading.Lock()  # 添加线程锁
+        self._lock = threading.RLock()  # 使用可重入锁
         
     def push(self, state, action, reward, next_state, done, log_prob):
         """添加新样本"""
@@ -65,7 +65,7 @@ class ReplayBuffer:
             return
         
         # 使用线程锁确保线程安全
-        with self.lock:
+        with self._lock:
             # 当缓冲区未满时，直接添加新元素
             if len(self.buffer) < self.capacity:
                 self.buffer.append((state, action, reward, next_state, done, log_prob))
@@ -77,15 +77,16 @@ class ReplayBuffer:
     def sample(self, batch_size):
         """随机采样一批样本"""
         # 过滤掉None值
-        valid_buffer = [item for item in self.buffer if item is not None]
-        if not valid_buffer:
-            # 返回空数组而不是None，避免解包错误
-            return np.array([]), np.array([]), np.array([]), np.array([]), np.array([]), np.array([])
-        
-        # 从有效缓冲区采样（避免采样到None）
-        batch = random.sample(valid_buffer, min(batch_size, len(valid_buffer)))
-        states, actions, rewards, next_states, dones, log_probs = map(np.stack, zip(*batch))
-        return states, actions, rewards, next_states, dones, log_probs
+        with self._lock:
+            valid_buffer = [item for item in self.buffer if item is not None]
+            if not valid_buffer:
+                # 返回空数组而不是None，避免解包错误
+                return np.array([]), np.array([]), np.array([]), np.array([]), np.array([]), np.array([])
+            
+            # 从有效缓冲区采样（避免采样到None）
+            batch = random.sample(valid_buffer, min(batch_size, len(valid_buffer)))
+            states, actions, rewards, next_states, dones, log_probs = map(np.stack, zip(*batch))
+            return states, actions, rewards, next_states, dones, log_probs
         
     def __len__(self):
         return len(self.buffer)
@@ -162,9 +163,9 @@ class SharedBackbone(nn.Module):
         context_feat = self.context_encoder(x[..., 2268:])  # [B, 256]
         
         # 投影到统一维度
-        card_feat = F.linear(card_feat, torch.zeros(self.hidden_dim, 512).to(x.device))
-        history_feat = F.linear(history_feat, torch.zeros(self.hidden_dim, 512).to(x.device))
-        context_feat = F.linear(context_feat, torch.zeros(self.hidden_dim, 256).to(x.device))
+        card_feat = F.linear(card_feat, torch.zeros(self.hidden_dim, 512))
+        history_feat = F.linear(history_feat, torch.zeros(self.hidden_dim, 512))
+        context_feat = F.linear(context_feat, torch.zeros(self.hidden_dim, 256))
         
         # 添加分类token和位置编码
         cls_tokens = self.cls_token.expand(x.shape[0], -1, -1)  # [B, 1, D]
@@ -501,14 +502,15 @@ def load_checkpoint(device, backbone, actor, critic, optimizer, model_dir="model
 def train_on_batch_ppo(states, actions, rewards, next_states, dones, old_log_probs,
                       backbone, actor, critic, target_critic, optimizer,
                       gamma=0.995, gae_lambda=0.95, device=device, ep=0):
+    
     """优化后的PPO训练函数"""
-    states = torch.FloatTensor(states).to(device)
-    next_states = torch.FloatTensor(next_states).to(device)
-    actions = torch.LongTensor(actions).to(device)
-    rewards = torch.FloatTensor(rewards).to(device)
-    dones = torch.BoolTensor(dones).to(device)
-    old_log_probs = torch.FloatTensor(old_log_probs).to(device)
-
+    states = torch.FloatTensor(states)
+    next_states = torch.FloatTensor(next_states)
+    actions = torch.LongTensor(actions)
+    rewards = torch.FloatTensor(rewards)
+    dones = torch.BoolTensor(dones)
+    old_log_probs = torch.FloatTensor(old_log_probs)
+    
     # 标准化rewards
     rewards = torch.clamp(rewards, -5.0, 5.0)  # 先裁剪极端值
     rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-8)
@@ -687,7 +689,7 @@ def run_training(episodes=30000):
     )
     '''
     
-    num_collectors = 10  # 根据CPU核心数调整
+    num_collectors = 15  # 根据CPU核心数调整
     # 创建线程安全的deque缓冲区列表
     memory_list = []
     for _ in range(num_collectors):
@@ -717,7 +719,11 @@ def run_training(episodes=30000):
         from threading import Thread
         
         def data_collection_thread(id):
-            
+
+            local_actor = deepcopy(actor).cpu()
+            local_actor.eval()
+            local_step = 0
+    
             p = psutil.Process()
             cores = list(range(psutil.cpu_count()))
             core_id = id % len(cores)
@@ -821,8 +827,8 @@ def run_training(episodes=30000):
                         # 使用缓存机制提升效率
                         if not hasattr(game, 'cached_state') or game.cached_state is None:
                             state = game._get_obs()
-                            state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(device)
-                            mask = torch.tensor(game.get_valid_action_mask(game.players[0].hand, M, game.active_level, game.last_play), dtype=torch.float32).unsqueeze(0).to(device)
+                            state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
+                            mask = torch.tensor(game.get_valid_action_mask(game.players[0].hand, M, game.active_level, game.last_play), dtype=torch.float32).unsqueeze(0)
                             mask = mask.squeeze(0)
                             
                             # 缓存计算结果
@@ -835,11 +841,11 @@ def run_training(episodes=30000):
                             mask = game.cached_mask
                         
                         # 仅在需要时切换模式
-                        if actor.training:
-                            actor.eval()
+                        if local_actor.training:
+                            local_actor.eval()
                         
                         with torch.no_grad():
-                            probs, _ = actor(state_tensor, mask)
+                            probs, _ = local_actor(state_tensor, mask)
                             temperature = 1.1
                             adj_probs = (probs ** (1/temperature))
                             adj_probs = adj_probs / adj_probs.sum()
@@ -848,6 +854,12 @@ def run_training(episodes=30000):
                             log_prob = dist.log_prob(action)
                             action_id = action.item()
                         
+                        local_step += 1
+                        # 每sync_freq步/局同步一次参数
+                        if local_step % 5 == 0:
+                            # 注意：actor必须是主线程的最新actor
+                            local_actor.load_state_dict(actor.cpu().state_dict())
+            
                         # 不清除缓存，保留用于后续步骤
                         entry = M_id_dict[action_id]
                         player = game.players[0]
@@ -1041,6 +1053,7 @@ def run_training(episodes=30000):
                     save_checkpoint(backbone, actor, critic, optimizer, collected_episodes + 1) 
             else:
                 mennum += 1
+                print(f"牌局不够:{len(memory)} NO.{collected_episodes%mennum}")
                 time.sleep(5)
 
         # 等待所有collector结束
