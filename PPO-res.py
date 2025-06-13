@@ -5,7 +5,11 @@
 
 import os
 import sys
+import time
 import math
+import threading
+import psutil
+import os
 import numpy as np
 from pathlib import Path
 import torch
@@ -48,21 +52,38 @@ logging.info(f"使用设备: {device}")
 
 class ReplayBuffer:
     """存储训练样本的循环缓冲区"""
-    def __init__(self, capacity=10000):
+    def __init__(self, capacity=20000):
         self.buffer = []  # 存储样本的列表
         self.capacity = capacity # 最大容量
         self.position = 0
+        self.lock = threading.Lock()  # 添加线程锁
         
     def push(self, state, action, reward, next_state, done, log_prob):
         """添加新样本"""
-        if len(self.buffer) < self.capacity:
-            self.buffer.append(None)
-        self.buffer[self.position] = (state, action, reward, next_state, done, log_prob)
-        self.position = (self.position + 1) % self.capacity
+        # 确保数据有效
+        if state is None or next_state is None or log_prob is None:
+            return
+        
+        # 使用线程锁确保线程安全
+        with self.lock:
+            # 当缓冲区未满时，直接添加新元素
+            if len(self.buffer) < self.capacity:
+                self.buffer.append((state, action, reward, next_state, done, log_prob))
+            else:
+                # 缓冲区已满时，覆盖最旧的数据
+                self.buffer[self.position] = (state, action, reward, next_state, done, log_prob)
+            self.position = (self.position + 1) % self.capacity
         
     def sample(self, batch_size):
         """随机采样一批样本"""
-        batch = random.sample(self.buffer, min(batch_size, len(self.buffer)))
+        # 过滤掉None值
+        valid_buffer = [item for item in self.buffer if item is not None]
+        if not valid_buffer:
+            # 返回空数组而不是None，避免解包错误
+            return np.array([]), np.array([]), np.array([]), np.array([]), np.array([]), np.array([])
+        
+        # 从有效缓冲区采样（避免采样到None）
+        batch = random.sample(valid_buffer, min(batch_size, len(valid_buffer)))
         states, actions, rewards, next_states, dones, log_probs = map(np.stack, zip(*batch))
         return states, actions, rewards, next_states, dones, log_probs
         
@@ -105,7 +126,7 @@ class SharedBackbone(nn.Module):
         # Transformer编码器
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=hidden_dim,
-            nhead=4,  # 减少注意力头数
+            nhead=8,  # 减少注意力头数
             dim_feedforward=1024,  # 减小前馈层维度
             dropout=0.1,
             activation='gelu',
@@ -113,7 +134,7 @@ class SharedBackbone(nn.Module):
         )
         self.transformer_encoder = nn.TransformerEncoder(
             encoder_layer,
-            num_layers=3  # 减少Transformer层数
+            num_layers=6  # 减少Transformer层数
         )
         
         # 位置编码
@@ -193,12 +214,12 @@ class ImprovedResNetActor(nn.Module):
         features = self.backbone(x)
         logits = self.fc_policy(features)
         
-        # 动态Pass抑制 - 根据训练阶段调整
-        if self.training:
-            pass_penalty = 1.2  # 训练时中等抑制
-        else:
-            pass_penalty = 0.8  # 评估时轻微抑制
-            
+        # 动态Pass惩罚系数
+        pass_penalty = 1.5 if self.training else 1.0  # 训练时更高惩罚
+        # 从状态张量中提取手牌数量（前108维是手牌特征）
+        hand_size = int(x[..., :108].sum().item())  # 手牌数量 = 非零特征数量
+        if hand_size < 5:  # 终局阶段降低Pass惩罚
+            pass_penalty *= max(0.5, 1 - (5 - hand_size)*0.1)
         logits[..., 0] -= pass_penalty
         
         # 应用动作掩码
@@ -238,53 +259,13 @@ class ImprovedResNetCritic(nn.Module):
         return value
 
 # 预分配GPU内存
-state_buf = torch.empty((1, 3049), dtype=torch.float32, device=device)
-mask_buf = torch.empty((1, 456), dtype=torch.float32, device=device)
+state_buf = torch.empty((8192, 3049), dtype=torch.float32, device=device)
+mask_buf = torch.empty((8192, 456), dtype=torch.float32, device=device)
 
-def select_action(actor, state, mask, device, is_free_turn, ep):
-    """改进的动作选择策略4.0"""
-    # 使用预分配缓冲区
-    state_buf.copy_(torch.from_numpy(state).view(1, -1))
-    mask_buf.copy_(torch.from_numpy(mask).view(1, -1))
+def bind_to_core(core_id):
+    p = psutil.Process(os.getpid())
+    p.cpu_affinity([core_id])
     
-    # 更平缓的探索衰减曲线
-    explore_factor = max(0.15, 0.6 * (0.992 ** (ep // 50)))  # 衰减更慢
-    temp = max(0.7, 2.0 - ep/5000)  # 更高的初始温度
-    
-    # 动态Pass抑制系数
-    pass_suppress = 1.8 + (1 - ep/8000)  # 随训练逐渐降低
-    
-    with torch.no_grad():
-        probs, logits = actor(state_tensor, mask_tensor)
-        
-        # 强化Pass抑制
-        if is_free_turn:
-            logits[0, 0] = -float('inf')  # 自由出牌禁止Pass
-        else:
-            # 动态Pass惩罚 = 基础值 + 训练进度调整
-            pass_penalty = 1.5 + (1 - ep/6000)
-            logits[0, 0] -= pass_penalty
-            
-        # 炸弹动作奖励
-        bomb_mask = torch.zeros_like(logits)
-        bomb_mask[:, 120:456] = 1  # 炸弹动作区间
-        logits += bomb_mask * (0.3 + ep/8000)  # 随训练逐渐重视炸弹
-        
-        # 改进的探索机制
-        if random.random() < explore_factor:
-            # 基于Q值的探索
-            with torch.no_grad():
-                q_values = critic(state_tensor).squeeze()
-                valid_q = q_values * mask_tensor[0].float()
-                valid_q[0] = -float('inf')  # 排除Pass
-                
-                # 优先探索高潜力动作
-                topk = min(5, (mask_tensor[0] > 0).sum())
-                if topk > 0:
-                    _, top_actions = valid_q.topk(topk)
-                    action = top_actions[random.randint(0, topk-1)]
-                    return action.item()
-
 def validate_game_state(game):
     """验证游戏状态的合法性"""
     # 检查出牌权
@@ -303,6 +284,39 @@ def validate_game_state(game):
         game.pass_count = 0
         
     return True
+
+def calculate_team_reward(game):
+    """计算队伍获胜奖励
+    输入: game对象
+    输出: 奖励值(针对玩家0)
+    """
+    if not game.is_game_over or len(game.ranking) < 2:
+        return 0.0
+    
+    # 获取前两名玩家
+    top_two = game.ranking[:2]
+    
+    # 判断队伍0获胜条件：玩家0和2都在前两名
+    team0_win = (0 in top_two) and (2 in top_two)
+    
+    # 判断队伍1获胜条件：玩家1和3都在前两名
+    team1_win = (1 in top_two) and (3 in top_two)
+    
+    # 队伍获胜奖励
+    if team0_win:
+        return 2.0  # 队伍0获胜奖励
+    elif team1_win:
+        return -2.0  # 队伍1获胜惩罚
+    else:
+        # 混合排名情况
+        if 0 in top_two:
+            return 1.5  # 玩家0进入前两名奖励
+        elif 2 in top_two:
+            return 1.0  # 队友玩家2进入前两名奖励
+        # 新增：双方队友都在前两名但顺序不同
+        elif (0 in top_two and 3 in top_two) or (1 in top_two and 2 in top_two):
+            return 0.5  # 混合队伍奖励
+    return 0.0
 
 def calculate_improved_reward(entry, player, mask, action_id, hand_size_before, game, ep):
     """改进的奖励计算"""
@@ -328,18 +342,26 @@ def calculate_improved_reward(entry, player, mask, action_id, hand_size_before, 
         game.log(f"🎉 春天！玩家 {game.current_player + 1} 在第一轮就出完所有牌！")
     
     # Pass处理优化
-    if action_id == 0:
-        base_penalty = 0.15 + (1 - progress) * 0.15  # 进一步降低Pass惩罚
-        phase_factor = max(0.2, 0.5 - ep/12000)
-        penalty = -base_penalty * phase_factor
-        
-        # 场景相关惩罚调整
-        if game.is_free_turn:
-            penalty *= 1.2
-        elif game.last_play and len(game.last_play) >= 4:
-            penalty *= 0.2  # 大幅降低对大牌的Pass惩罚
+        if action_id == 0:
+            # 动态Pass惩罚
+            base_penalty = 0.5  # 基础惩罚值
+            # 根据游戏阶段调整
+            if progress < 0.3:  # 早期阶段
+                penalty = -base_penalty * 0.8
+            elif progress > 0.7:  # 终局阶段
+                penalty = -base_penalty * 1.5
+            else:
+                penalty = -base_penalty
+                
+            # 自由出牌轮次Pass惩罚加倍
+            if game.is_free_turn:
+                penalty *= 2.0
+                
+            reward += penalty
             
-        reward += penalty
+            # 连续Pass额外惩罚
+            if game.pass_count > 2:
+                reward -= 0.1 * game.pass_count
         
     else:
         # 出牌奖励优化
@@ -352,16 +374,26 @@ def calculate_improved_reward(entry, player, mask, action_id, hand_size_before, 
             base_reward *= 1.2  # 牌数少于一半时增加奖励
             
         # 牌型奖励优化
+        bomb_multiplier = 1.0
+        # 关键回合炸弹奖励加成（终局或对抗大牌）
+        if progress > 0.7 and len(game.last_play) >= 4:
+            bomb_multiplier = 1.5
+            
         type_bonus = {
             'single': 0.2 + (1-progress)*0.2,
             'pair': 0.25 + progress*0.1,
             'trio': 0.3 + progress*0.15,
-            'bomb': 0.4 + progress*0.2,  # 普通炸弹
-            'straight_bomb': 0.6 + progress*0.3,  # 顺子炸弹
-            'joker_bomb': 1.0,  # 天王炸
+            'bomb': (0.4 + progress*0.2) * bomb_multiplier,  # 普通炸弹
+            'straight_bomb': (0.6 + progress*0.3) * bomb_multiplier,  # 顺子炸弹
+            'joker_bomb': 1.0 * bomb_multiplier,  # 天王炸
             'sequence': 0.35 + len(game.last_play)*0.04,
             'spring': 5.0  # 春天奖励
         }.get(action_type, 0.0)
+        
+        # 炸弹使用成本（随游戏进度减少）
+        if 'bomb' in action_type:
+            bomb_cost = max(0.1, 0.3 * (1 - progress))
+            type_bonus -= bomb_cost
         
         # 控制权奖励
         control_bonus = 0.0
@@ -373,14 +405,41 @@ def calculate_improved_reward(entry, player, mask, action_id, hand_size_before, 
         if any(c[0] in ['A', '2'] for c in game.recent_actions[0]):
             key_card_bonus = 0.15 + progress * 0.1
             
-        # 配合队友奖励
+        # 增强队友配合奖励
         teammate_bonus = 0.0
         teammate = (game.current_player + 2) % 4
+        
+        # 基础队友配合
         if game.last_player == teammate:
             teammate_bonus = 0.2
             
+        # 接队友牌型额外奖励
+        if (game.last_player == teammate and 
+            action_type == game.last_play_type and
+            cards_played >= len(game.last_play)):
+            teammate_bonus += 0.15
+            
+        # 为队友创造机会奖励
+        if (game.last_player != teammate and 
+            len(player.hand) < 10 and 
+            cards_played == 1 and 
+            '2' in game.recent_actions[0][0]):
+            teammate_bonus += 0.1
+            
+        # 策略性额外奖励
+        strategy_bonus = 0.0
+        # 压制对手奖励
+        if game.last_player in [1, 3] and action_type == game.last_play_type:
+            strategy_bonus += 0.3
+        # 配合队友奖励
+        if game.last_player in [0, 2] and action_type == game.last_play_type:
+            strategy_bonus += 0.2
+        # 获得出牌权奖励
+        if game.is_free_turn:
+            strategy_bonus += 0.1
+            
         reward += (base_reward + type_bonus + control_bonus + 
-                  key_card_bonus + teammate_bonus)
+                  key_card_bonus + teammate_bonus + strategy_bonus)
         
         # 终局优化
         if hand_size <= 3:
@@ -484,10 +543,13 @@ def train_on_batch_ppo(states, actions, rewards, next_states, dones, old_log_pro
     
     # 计算KL散度并动态调整clip范围
     kl_div = (old_log_probs - new_log_probs).mean()
-    if kl_div > 0.02:
-        clip_epsilon = max(0.1, 0.15)  # 收紧clip范围
+    # 动态调整clip范围稳定训练
+    if kl_div > 0.015:
+        clip_epsilon = 0.1  # 收紧clip范围
+    elif kl_div < 0.005:
+        clip_epsilon = 0.25  # 放宽clip范围
     else:
-        clip_epsilon = max(0.1, 0.2 * (0.998 ** (ep // 50)))  # 放宽clip范围衰减
+        clip_epsilon = 0.15  # 中等范围
     
     # 计算策略损失
     ratios = torch.exp(new_log_probs - old_log_probs)
@@ -495,11 +557,11 @@ def train_on_batch_ppo(states, actions, rewards, next_states, dones, old_log_pro
     surr2 = torch.clamp(ratios, 1.0 - clip_epsilon, 1.0 + clip_epsilon) * advantages
     policy_loss = -torch.min(surr1, surr2).mean()
     
-    # 动态调整Pass惩罚
+    # 大幅增强Pass惩罚
     pass_probs = probs[:, 0]
-    pass_penalty_factor = max(0.02, 0.1 * (0.995 ** ep))  # 降低Pass惩罚
+    pass_penalty_factor = 0.8  # 固定高惩罚因子
     pass_penalty = pass_penalty_factor * pass_probs.mean()
-    policy_loss += pass_penalty
+    policy_loss += pass_penalty  # 直接应用惩罚
     
     # Value Loss计算优化
     value_pred = critic(states)
@@ -548,11 +610,11 @@ def run_training(episodes=30000):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     adaptive_params = {
-        'min_batch_size': 512,  # 增加最小batch size
-        'max_batch_size': 8192,  # 增加最大batch size
-        'batch_growth_interval': 128,  # 更频繁地增加batch size
-        'current_batch_size': 512,
-        'growth_step': 32
+        'min_batch_size': 1024,  # 减小最小batch size
+        'max_batch_size': 8192,  # 减小最大batch size
+        'batch_growth_interval': 256,  # 减少增加频率
+        'current_batch_size': 1024,
+        'growth_step': 256  # 减小增长步长
     }
     
     # 改进的课程学习
@@ -616,7 +678,22 @@ def run_training(episodes=30000):
         verbose=True
     )
     
-    memory = ReplayBuffer(capacity=10000)
+    '''
+    # 使用步数衰减替代Plateau
+    scheduler = optim.lr_scheduler.StepLR(
+        optimizer, 
+        step_size=500,  # 每500步衰减一次
+        gamma=0.95      # 衰减系数
+    )
+    '''
+    
+    num_collectors = 10  # 根据CPU核心数调整
+    # 创建线程安全的deque缓冲区列表
+    memory_list = []
+    for _ in range(num_collectors):
+        memory_list.append(ReplayBuffer(capacity=20000))
+        
+    #memory = ReplayBuffer(capacity=50000)
     writer = SummaryWriter(f'runs/guandan_ppo_{datetime.now().strftime("%Y%m%d_%H%M%S")}')
     initial_ep = load_checkpoint(device, backbone, actor, critic, optimizer)
     best_reward = float('-inf')
@@ -636,249 +713,343 @@ def run_training(episodes=30000):
                 target_param.data * (1.0 - tau) + param.data * tau
             )
     try:
-        for ep in range(initial_ep, initial_ep + episodes):
-            game_counter += 1
-            # 生成唯一的运行ID（基于时间戳）
-            run_id = datetime.now().strftime("%Y%m%d%H%M%S")
+        # 创建数据收集和训练分离的线程
+        from threading import Thread
+        
+        def data_collection_thread(id):
             
-            game_id = f"{run_id}_{game_counter:04d}"  # 格式: 时间戳_序号
-
-            game = GuandanGame(verbose=True)
-            episode_reward = 0
-            episode_steps = 0
-            pass_penalty_given = False  # 防止多次惩罚
-            continue_rounds = 0
+            p = psutil.Process()
+            cores = list(range(psutil.cpu_count()))
+            core_id = id % len(cores)
+            p.cpu_affinity([core_id])
+            print(f"线程 {id} 绑定到核心 {core_id}")
             
-            while not game.is_game_over and len(game.history) <= 200:
+            """独立的数据收集线程"""
+            memory = memory_list[id]
+            
+            for ep in range(initial_ep, initial_ep + episodes):
+                thread_id = threading.current_thread().ident
+                game_counter = ep - initial_ep + 1
+                run_id = datetime.now().strftime("%Y%m%d%H%M%S")
+                game_id = f"{run_id}_{game_counter:04d}_{thread_id}"
                 
-                # 跳过已经出完牌的玩家（即已经在排名中的玩家）
-                while game.current_player in game.ranking:
-                    game.current_player = (game.current_player + 1) % 4
+                game = GuandanGame(verbose=False)  # 关闭详细日志
+                game.game_id = game_id
+                episode_reward = 0
+                episode_steps = 0
+                pass_penalty_given = False
+                continue_rounds = 0                
+                            
+                while not game.is_game_over and len(game.history) <= 300:
+                    # 验证游戏状态
+                    if not validate_game_state(game):
+                        game.log("⚠️ 游戏状态验证失败，重置状态")
+                        game.pass_count = 0
+                        game.last_play = []
+                        game.is_free_turn = True
+                    
+                    # 跳过已经出完牌的玩家（即已经在排名中的玩家）    
+                    while not game.is_game_over and game.current_player in game.ranking:
+                        game.current_player = (game.current_player + 1) % 4
+                        game.log(f"玩家 {game.current_player +1}  ERROR")
+                        game.is_game_over = len(game.ranking) >= 4
+                        game.check_game_over()
+                        if game.is_game_over:
+                            game.log(f"⚠️ 所有玩家都已出完牌，强制结束游戏 ")
 
-                continue_rounds = (continue_rounds+1)%2
-                if continue_rounds == 0:
-                    consecutive_pass_rounds = consecutive_pass_rounds+game.pass_count
-                else:
-                    consecutive_pass_rounds=game.pass_count
-                    
-                # 检查连续4次Pass惩罚
-                if consecutive_pass_rounds > 4 and not pass_penalty_given:
-                    # 对所有玩家（这里只训练主智能体，reward记录在memory）
-                    penalty = -1.0
-                    # 仅对主智能体做记录
-                    if len(memory) > 0:
-                        memory.push(memory.buffer[-1][0], 0, penalty, memory.buffer[-1][0], False, 0.0)
-                        episode_reward += penalty
-                    # 日志提示
-                    logging.info("所有玩家连续4次Pass，给予所有玩家惩罚！")
-                    # 清空pass_count和recent_actions，进入新一轮
-                    game.pass_count = 0
-                    game.recent_actions = [['None'] for _ in range(4)]
-                    pass_penalty_given = True
-                else:
-                    pass_penalty_given = False
-                    
-                # 当玩家A出牌完后，其余玩家都选择Pass，玩家A重新获得自由出牌权
-                if game.pass_count >= 3:
-                    # 记录连续Pass轮次
-                    consecutive_pass_rounds = game.pass_count
-                    
-                    # 重置出牌权给最后出牌的玩家（如果该玩家未出完牌）
-                    if game.last_player is not None:
-                        # 确保最后出牌的玩家没有出完牌
-                        if game.last_player not in game.ranking:
-                            game.current_player = game.last_player
-                            game.log(f"玩家 {game.last_player + 1} 获得新一轮出牌权（连续{consecutive_pass_rounds}次Pass后）")
+                    continue_rounds = (continue_rounds+1)%2
+                    if continue_rounds == 0:
+                        consecutive_pass_rounds = consecutive_pass_rounds+game.pass_count
+                    else:
+                        consecutive_pass_rounds=game.pass_count
+                        
+                    # 检查连续4次Pass惩罚
+                    if consecutive_pass_rounds > 8 and not pass_penalty_given:
+                        # 对所有玩家（这里只训练主智能体，reward记录在memory）
+                        penalty = -1.0
+                        # 仅对主智能体做记录
+                        if len(memory) > 0:
+                            memory.push(memory.buffer[-1][0], 0, penalty, memory.buffer[-1][0], False, 0.0)
+                            episode_reward += penalty
+                        # 日志提示
+                        game.log(f"所有玩家连续8次Pass，给予所有玩家惩罚！")
+                        # 清空pass_count和recent_actions，进入新一轮
+                        game.pass_count = 0
+                        game.recent_actions = [['None'] for _ in range(4)]
+                        pass_penalty_given = True
+                    else:
+                        pass_penalty_given = False
+                        
+                    # 当玩家A出牌完后，其余玩家都选择Pass，玩家A重新获得自由出牌权
+                    if game.pass_count >= 3:
+                        # 记录连续Pass轮次
+                        consecutive_pass_rounds = game.pass_count
+                        
+                        # 重置出牌权给最后出牌的玩家（如果该玩家未出完牌）
+                        if game.last_player is not None:
+                            # 确保最后出牌的玩家没有出完牌
+                            if game.last_player not in game.ranking:
+                                game.current_player = game.last_player
+                                game.log(f"玩家 {game.last_player + 1} 获得新一轮出牌权（连续{consecutive_pass_rounds}次Pass后） ")
+                            else:
+                                # 如果最后出牌的玩家已出完牌，则选择下一个未出完牌的玩家
+                                next_player = (game.last_player + 1) % 4
+                                while next_player in game.ranking:
+                                    next_player = (next_player + 1) % 4
+                                game.current_player = next_player
+                                game.log(f"玩家 {next_player + 1} 获得新一轮出牌权（连续{consecutive_pass_rounds}次Pass后） ")
                         else:
-                            # 如果最后出牌的玩家已出完牌，则选择下一个未出完牌的玩家
-                            next_player = (game.last_player + 1) % 4
+                            # 如果没有最后出牌的玩家，则按顺序找下一个未出完牌的玩家
+                            next_player = (game.current_player + 1) % 4
                             while next_player in game.ranking:
                                 next_player = (next_player + 1) % 4
                             game.current_player = next_player
                             game.log(f"玩家 {next_player + 1} 获得新一轮出牌权（连续{consecutive_pass_rounds}次Pass后）")
-                    else:
-                        # 如果没有最后出牌的玩家，则按顺序找下一个未出完牌的玩家
-                        next_player = (game.current_player + 1) % 4
-                        while next_player in game.ranking:
-                            next_player = (next_player + 1) % 4
-                        game.current_player = next_player
-                        game.log(f"玩家 {next_player + 1} 获得新一轮出牌权（连续{consecutive_pass_rounds}次Pass后）")
 
-                    # 重置状态
-                    game.last_play = []
-                    game.pass_count = 0  # 重置Pass计数避免死循环
-                    game.recent_actions = [['None'] for _ in range(4)]
-                    game.is_free_turn = True
-                    continue
+                        # 重置状态
+                        game.last_play = []
+                        game.pass_count = 0  # 重置Pass计数避免死循环
+                        game.recent_actions = [['None'] for _ in range(4)]
+                        game.is_free_turn = True
+                        game.is_game_over = len(game.ranking) >= 4
+                        continue
 
-                # 玩家0：训练中的PPO智能体（主训练对象）
-                # 玩家1-3：游戏内置的规则型AI对手
-                # 通过current_player轮转机制实现回合制出牌
-                if game.current_player == 0:
-                    state = game._get_obs() #玩家状态
-                    state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(device)
-                    mask = torch.tensor(game.get_valid_action_mask(game.players[0].hand, M,game.active_level, game.last_play), dtype=torch.float32).unsqueeze(0).to(device) #获取有效动作
-                    mask = mask.squeeze(0) 
-                    actor.eval()
-                    with torch.no_grad():
-                        probs, _ = actor(state_tensor, mask)
-                        temperature = 1.1
-                        adj_probs = (probs ** (1/temperature))
-                        adj_probs = adj_probs / adj_probs.sum()
-                        dist = Categorical(adj_probs)
-                        action = dist.sample()
-                        log_prob = dist.log_prob(action)
-                        action_id = action.item()
-                    actor.train()
-                    entry = M_id_dict[action_id]
-                    player = game.players[0]
-                    hand_size_before = len(player.hand)
-                    # 玩家的动作通过 enumerate_colorful_actions 函数生成可能的组合。
-                    # 如果有可选动作，代码随机选择一个动作并更新游戏状态，包括玩家手牌、最近动作记录以及游戏日志。
-                    # 如果玩家出完所有牌，代码更新排名并检查游戏是否结束。
-                    combos = enumerate_colorful_actions(entry, player.hand, game.active_level) 
-                    if combos:
-                        chosen_move = random.choice(combos)
-                        if not chosen_move:
-                            game.log(f"玩家 1 PPO Pass [局号: {game_id}]")
+                    # 玩家0：训练中的PPO智能体（主训练对象）
+                    # 玩家1-3：游戏内置的规则型AI对手
+                    # 通过current_player轮转机制实现回合制出牌
+                    if game.current_player == 0:
+                        # 使用缓存机制提升效率
+                        if not hasattr(game, 'cached_state') or game.cached_state is None:
+                            state = game._get_obs()
+                            state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(device)
+                            mask = torch.tensor(game.get_valid_action_mask(game.players[0].hand, M, game.active_level, game.last_play), dtype=torch.float32).unsqueeze(0).to(device)
+                            mask = mask.squeeze(0)
+                            
+                            # 缓存计算结果
+                            game.cached_state = state
+                            game.cached_state_tensor = state_tensor
+                            game.cached_mask = mask
+                        else:
+                            # 使用缓存
+                            state_tensor = game.cached_state_tensor
+                            mask = game.cached_mask
+                        
+                        # 仅在需要时切换模式
+                        if actor.training:
+                            actor.eval()
+                        
+                        with torch.no_grad():
+                            probs, _ = actor(state_tensor, mask)
+                            temperature = 1.1
+                            adj_probs = (probs ** (1/temperature))
+                            adj_probs = adj_probs / adj_probs.sum()
+                            dist = Categorical(adj_probs)
+                            action = dist.sample()
+                            log_prob = dist.log_prob(action)
+                            action_id = action.item()
+                        
+                        # 不清除缓存，保留用于后续步骤
+                        entry = M_id_dict[action_id]
+                        player = game.players[0]
+                        hand_size_before = len(player.hand)
+                        '''
+                        state = game._get_obs() #当前游戏状态
+                        state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(device)
+                        mask = torch.tensor(game.get_valid_action_mask(game.players[0].hand, M,game.active_level, game.last_play), dtype=torch.float32).unsqueeze(0).to(device) #获取有效动作 掩码处理：无效动作位置为0，有效动作为1，确保智能体只选择合法动作
+                        mask = mask.squeeze(0) 
+                        actor.eval() #切换actor网络到评估模式（禁用dropout等训练专用层）
+                        with torch.no_grad():
+                            probs, _ = actor(state_tensor, mask) #输出动作概率分布probs（忽略价值函数输出）
+                            temperature = 1.1 #通过温度参数temperature=1.1调整探索程度
+                            adj_probs = (probs ** (1/temperature))
+                            adj_probs = adj_probs / adj_probs.sum()
+                            dist = Categorical(adj_probs)
+                            action = dist.sample()
+                            log_prob = dist.log_prob(action) #记录动作的对数概率（用于PPO损失计算）
+                            action_id = action.item()
+                        actor.train() #恢复actor网络到训练模式
+                        entry = M_id_dict[action_id]
+                        player = game.players[0]
+                        hand_size_before = len(player.hand) #记录执行动作前的手牌数量（用于奖励计算）
+                        '''
+                        
+                        # 玩家的动作通过 enumerate_colorful_actions 函数生成可能的组合。
+                        # 如果有可选动作，代码随机选择一个动作并更新游戏状态，包括玩家手牌、最近动作记录以及游戏日志。
+                        # 如果玩家出完所有牌，代码更新排名并检查游戏是否结束。
+                        combos = enumerate_colorful_actions(entry, player.hand, game.active_level) 
+                        if combos:
+                            chosen_move = random.choice(combos)
+                            if not chosen_move:
+                                game.log(f"玩家 1 PPO Pass ")
+                                game.pass_count += 1
+                                game.recent_actions[0] = ['Pass']
+                            else:
+                                is_free_turn = False
+                                game.last_play = chosen_move
+                                game.last_player = 0
+                                for card in chosen_move:
+                                    player.played_cards.append(card)
+                                    player.hand.remove(card)
+                                game.log(f"玩家 1 PPO 出牌: {' '.join(chosen_move)} , 当前级牌 {game.active_level}")
+                                game.recent_actions[0] = list(chosen_move)
+                                game.jiefeng = False
+                                if not player.hand:
+                                    game.log(f"\n🎉 玩家 1 PPO 出完所有牌！\n")
+                                    game.ranking.append(0)  # 玩家0的索引直接使用0
+                                    game.is_game_over = len(game.ranking) >= 4
+                                    game.pass_count = 0
+                                    
+                                    # 双重确认：确保手牌确实为空
+                                    if player.hand:
+                                        game.log(f"⚠️ 警告：玩家1PPO手牌非空但被判定为空！手牌: {' '.join(player.hand)} ")
+                                    else:
+                                        # 轮转玩家并跳出循环
+                                        game.current_player = (game.current_player + 1) % 4
+                                        continue  # 跳出当前回合循环
+                                    
+                                game.pass_count = 0
+                                # 移除重复的hand检查
+                                if game.is_free_turn:
+                                    game.is_free_turn = False
+                        else:
+                            game.log(f"玩家 1  PPO Pass ")
                             game.pass_count += 1
                             game.recent_actions[0] = ['Pass']
-                        else:
-                            is_free_turn = False
-                            game.last_play = chosen_move
-                            game.last_player = 0
-                            for card in chosen_move:
-                                player.played_cards.append(card)
-                                player.hand.remove(card)
-                            game.log(f"玩家 1 PPO 出牌: {' '.join(chosen_move)} [局号: {game_id}]")
-                            game.recent_actions[0] = list(chosen_move)
-                            game.jiefeng = False
-                            if not player.hand:
-                                game.log(f"\n🎉 玩家 1 PPO 出完所有牌！[局号: {game_id}]\n")
-                                game.ranking.append(0)  # 玩家0的索引直接使用0
-                                game.is_game_over = len(game.ranking) >= 4
-                                game.pass_count = 0
-                                
-                                # 双重确认：确保手牌确实为空
-                                if player.hand:
-                                    game.log(f"⚠️ 警告：玩家1PPO手牌非空但被判定为空！手牌: {' '.join(player.hand)}")
-                                else:
-                                    # 轮转玩家并跳出循环
-                                    game.current_player = (game.current_player + 1) % 4
-                                    break  # 跳出当前回合循环
-                                
-                            game.pass_count = 0
-                            # 移除重复的hand检查
-                            if game.is_free_turn:
-                                game.is_free_turn = False
+                            
+                        next_state = game._get_obs()
+                        reward = calculate_improved_reward(entry, player, mask, action_id, hand_size_before, game, ep)
+                        reward += calculate_team_reward(game)
+                        episode_reward += reward
+                        memory.push(state, action_id, reward, next_state, game.is_game_over, log_prob.item())
+                            
+                        player.last_played_cards = game.recent_actions[0]
+                        game.current_player = (game.current_player + 1) % 4 
+                        episode_steps += 1
                     else:
-                        game.log(f"玩家 1  PPO Pass [局号: {game_id}]")
-                        game.pass_count += 1
-                        game.recent_actions[0] = ['Pass']
+                        # 添加AI玩家结束检查
+                        current_ai_player = game.players[game.current_player]
+                        game.ai_play(current_ai_player)
                         
-                    next_state = game._get_obs()
-                    reward = calculate_improved_reward(entry, player, mask, action_id, hand_size_before, game, ep)
-                    episode_reward += reward
-                    memory.push(state, action_id, reward, next_state, game.is_game_over, log_prob.item())
-                    player.last_played_cards = game.recent_actions[0]
-                    game.current_player = (game.current_player + 1) % 4 
-                    episode_steps += 1
-                else:
-                    # 添加AI玩家结束检查
-                    current_ai_player = game.players[game.current_player]
-                    game.ai_play(current_ai_player)
+                        # 检查AI玩家是否出完牌（使用玩家索引代替seat属性）
+                        if not current_ai_player.hand and game.current_player not in game.ranking:
+                            game.ranking.append(game.current_player)
+                            game.is_game_over = len(game.ranking) >= 4
+                            if game.is_game_over:
+                                break  # 立即结束游戏循环
+                            
+                    round_history = []
+                    if game.current_player == 0 and any(action != ['None'] for action in game.recent_actions):
+                        round_history = [action.copy() for action in game.recent_actions]
+                        # 限制历史记录长度
+                        if len(game.history) < 50:
+                            game.history.append(round_history) 
+                        game.recent_actions = [['None'] for _ in range(4)]
                     
-                    # 检查AI玩家是否出完牌（使用玩家索引代替seat属性）
-                    if not current_ai_player.hand and game.current_player not in game.ranking:
-                        game.ranking.append(game.current_player)
-                        game.is_game_over = len(game.ranking) >= 4
-                        if game.is_game_over:
-                            break  # 立即结束游戏循环
-                        
-                round_history = []
-                if game.current_player == 0 and any(action != ['None'] for action in game.recent_actions):
-                    round_history = [action.copy() for action in game.recent_actions]
-                    game.history.append(round_history) 
-                    game.recent_actions = [['None'] for _ in range(4)]
+                    all_others_pass = False    
+                    if len(round_history) == 4 and round_history[0] != ['Pass']:
+                        all_others_pass = all(action == ['Pass'] for action in round_history[1:4])
                 
-                all_others_pass = False    
-                if len(round_history) == 4 and round_history[0] != ['Pass']:
-                    all_others_pass = all(action == ['Pass'] for action in round_history[1:4])
+                    if all_others_pass:
+                        game.is_free_turn = True
+                        game.last_play = []
+                        game.pass_count = 0
+                        if hasattr(game, 'last_player'):
+                            game.current_player = game.last_player
+                        #print("自由出牌轮，mask:", mask.cpu().numpy())
                     
-                if all_others_pass:
-                    game.is_free_turn = True
-                    game.last_play = []
-                    game.pass_count = 0
-                    if hasattr(game, 'last_player'):
-                        game.current_player = game.last_player
-                    print("自由出牌轮，mask:", mask.cpu().numpy())
-
-                if all(action == ['Pass'] for action in game.recent_actions):
-                    game.is_free_turn = True
-                    game.last_play = []
-                    game.pass_count = 0
-                    print("死循环检测，mask:", mask.cpu().numpy())
+                    if all(action == ['Pass'] for action in game.recent_actions):
+                        game.is_free_turn = True
+                        game.last_play = []
+                        game.pass_count = 0
+                        print("死循环检测，mask:", mask.cpu().numpy())
         
+        collectors = []
+        for i in range(num_collectors):
+            memory = memory_list[i]
+            collector = Thread(target=data_collection_thread, daemon=True,kwargs={'id': i})
+            collector.start()
+        
+        # 主训练循环
+        collected_episodes = 0
+        mennum = 0
+        while collected_episodes < episodes:
+            mennum += 1
+            memory = memory_list[collected_episodes%mennum]
+            
+            # 批量训练
+            if len(memory) >= adaptive_params['current_batch_size']:
+                states, actions, rewards, next_states, dones, old_log_probs = memory.sample(
+                    adaptive_params['current_batch_size']
+                )
+
+                # 从队列获取数据
+                collected_episodes += 1
+
+                print(f"len1(memory):{len(memory)} ID:{collected_episodes%mennum}")
+                
                 # 动态调整batch size
-                if ep % adaptive_params['batch_growth_interval'] == 0:
+                if collected_episodes % adaptive_params['batch_growth_interval'] == 0:
                     adaptive_params['current_batch_size'] = min(
                         adaptive_params['max_batch_size'],
-                        adaptive_params['current_batch_size'] + 32
+                        adaptive_params['current_batch_size'] + adaptive_params['growth_step']
                     )
                 
-                if len(memory) >= adaptive_params['current_batch_size']:
-                    states, actions, rewards, next_states, dones, old_log_probs = memory.sample(
-                        adaptive_params['current_batch_size']
-                    )
-                    # 添加训练步骤并接收返回值
+                # 使用torch.jit.script加速训练
+                with torch.jit.optimized_execution(True):
                     policy_loss, value_loss, entropy, kl_div = train_on_batch_ppo(
                         states, actions, rewards, next_states, dones, old_log_probs,
                         backbone, actor, critic, target_critic, optimizer,
-                        gamma=0.99, gae_lambda=0.97, device=device, ep=ep
+                        gamma=0.99, gae_lambda=0.97, device=device, ep=collected_episodes
                     )
+                
+                # 记录训练指标
+                writer.add_scalar('Training/PolicyLoss', policy_loss, collected_episodes)
+                writer.add_scalar('Training/ValueLoss', value_loss, collected_episodes)
+                writer.add_scalar('Training/Entropy', entropy, collected_episodes)
+                writer.add_scalar('Training/KLDivergence', kl_div, collected_episodes)
+                writer.add_scalar('Training/EpisodeSteps', collected_episodes, collected_episodes)
+                
+                # 减少目标网络更新频率
+                if collected_episodes % 50 == 0:                     
+                    soft_update(target_backbone, backbone)
+                    soft_update(target_critic, critic)
                     
-                soft_update(target_backbone, backbone)
-                soft_update(target_critic, critic)
                 scheduler.step(policy_loss)
-                writer.add_scalar('Training/PolicyLoss', policy_loss, ep)
-                writer.add_scalar('Training/ValueLoss', value_loss, ep)
-                writer.add_scalar('Training/Entropy', entropy, ep)
-                writer.add_scalar('Training/KLDivergence', kl_div, ep)
-                writer.add_scalar('Training/EpisodeReward', episode_reward, ep)
-                writer.add_scalar('Training/EpisodeSteps', episode_steps, ep)
-                for i, param_group in enumerate(optimizer.param_groups):
-                    writer.add_scalar(f'Training/LR_group_{i}', param_group['lr'], ep)
-                    
-            if (ep + 1) % 10 == 0:
-                # 添加梯度范数监控
-                grad_norms = []
-                for param in backbone.parameters():
-                    if param.grad is not None:
-                        grad_norms.append(param.grad.norm().item())
-                avg_grad_norm = sum(grad_norms)/len(grad_norms) if grad_norms else 0
                 
-                # 添加学习率监控
-                lrs = [group['lr'] for group in optimizer.param_groups]
+                # 定期打印日志    
+                if (collected_episodes + 1) % 10 == 0:                
+                    logging.info(
+                        f"Episode {collected_episodes + 1}: "
+                        f"PLoss={policy_loss:.4f}, VLoss={value_loss:.4f}, "
+                        f"Entropy={entropy:.4f}, KL={kl_div:.4f}, "
+                        f"BatchSize={adaptive_params['current_batch_size']}"
+                    )
                 
-                logging.info(
-                    f"Episode {ep + 1}: "
-                    f"PLoss={policy_loss:.4f}, VLoss={value_loss:.4f}, "
-                    f"Entropy={entropy:.4f}, KL={kl_div:.4f}, "
-                    f"Reward={episode_reward:.2f}, Steps={episode_steps}, "
-                    f"BatchSize={adaptive_params['current_batch_size']}"
-                )
-                    
-            if episode_reward > best_reward:
-                best_reward = episode_reward
-                save_checkpoint(backbone, actor, critic, optimizer, ep + 1,model_dir="models/best")
+                # 训练后清理已使用的样本
+                # 计算实际使用的样本索引
+                used_indices = set()
+                for i in range(len(memory.buffer)):
+                    for j in range(len(states)):
+                        if np.array_equal(memory.buffer[i][0], states[j]):
+                            used_indices.add(i)
                 
-            if (ep + 1) % 200 == 0:
-                save_checkpoint(backbone, actor, critic, optimizer, ep + 1)
+                # 移除已使用的样本
+                memory.buffer = [item for idx, item in enumerate(memory.buffer) if idx not in used_indices]
+                
+                # 定期保存检查点
+                if (collected_episodes + 1) % 100 == 0:
+                    save_checkpoint(backbone, actor, critic, optimizer, collected_episodes + 1) 
+            else:
+                mennum += 1
+                time.sleep(5)
+
+        # 等待所有collector结束
+        for collector in collectors:
+            collector.join()
                 
     except KeyboardInterrupt:
         logging.info("训练被手动中断")
-        save_checkpoint(backbone, actor, critic, optimizer, ep + 1,
-                      model_dir="models/interrupted")
+        save_checkpoint(backbone, actor, critic, optimizer, 1000000, model_dir="models/interrupted")
     finally:
         writer.close()
 
