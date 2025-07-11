@@ -1,7 +1,16 @@
-import numpy as np
-from get_actions import  CARD_RANKS, SUITS,encode_hand_108
+"""
+display.py
+掼蛋AI对局结果与模型评测辅助工具。支持批量评测模型胜率、排名、测试多模型等功能，并自带演示主流程。
+依赖核心对局逻辑。
+"""
 import random
-from collections import Counter,defaultdict
+import os
+import numpy as np
+import torch.optim as optim
+from pathlib import Path
+from collections import Counter, defaultdict
+from get_actions import enumerate_colorful_actions, CARD_RANKS, SUITS, encode_hand_108
+
 try:
     from c_rule import Rules  # 导入 Cython 版本
 except ImportError:
@@ -10,11 +19,215 @@ try:
     from c_give_cards import create_deck, shuffle_deck, deal_cards
 except ImportError:
     from give_cards import create_deck, shuffle_deck, deal_cards
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import json
 
-import threading
-from threading import Thread
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# 定义牌的点数
+CARD_RANKS = {
+    '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8,
+    '9': 9, '10': 10, 'J': 11, 'Q': 12, 'K': 13, 'A': 14,
+    '小王': 16, '大王': 17
+}
 
 RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
+
+action_dim = 1024
+    
+class ReplayBuffer:
+    """存储训练样本的循环缓冲区"""
+    def __init__(self, capacity=2050):
+        self.buffer = []  # 存储样本的列表
+        self.capacity = capacity # 最大容量
+        self.position = 0
+        self._lock = threading.RLock()  # 使用可重入锁
+        
+    def push(self, state, action, reward, next_state, done, log_prob):
+        """添加新样本"""
+        # 确保数据有效
+        if state is None or next_state is None or log_prob is None:
+            return
+        
+        # 使用线程锁确保线程安全
+        with self._lock:
+            # 当缓冲区未满时，直接添加新元素
+            if len(self.buffer) < self.capacity:
+                self.buffer.append((state, action, reward, next_state, done, log_prob))
+            else:
+                # 缓冲区已满时，覆盖最旧的数据
+                self.buffer[self.position] = (state, action, reward, next_state, done, log_prob)
+            self.position = (self.position + 1) % self.capacity
+        
+    def sample(self, batch_size):
+        """随机采样一批样本"""
+        # 过滤掉None值
+        with self._lock:
+            valid_buffer = [item for item in self.buffer if item is not None]
+            if not valid_buffer:
+                # 返回空数组而不是None，避免解包错误
+                return np.array([]), np.array([]), np.array([]), np.array([]), np.array([]), np.array([])
+            
+            # 从有效缓冲区采样（避免采样到None）
+            batch = random.sample(valid_buffer, min(batch_size, len(valid_buffer)))
+            states, actions, rewards, next_states, dones, log_probs = map(np.stack, zip(*batch))
+            return states, actions, rewards, next_states, dones, log_probs
+        
+    def __len__(self):
+        return len(self.buffer)
+
+# 修改SharedBackbone类
+class SharedBackbone(nn.Module):
+    def __init__(self, state_dim=1430, hidden_dim=1024):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        
+        # 改进的输入层
+        self.input_layer = nn.Sequential(
+            nn.Linear(state_dim, hidden_dim * 2),
+            nn.LayerNorm(hidden_dim * 2),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.1)
+        )
+        
+        # 移除LSTM层，改用残差块
+        self.res_block1 = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.1)
+        )
+        self.res_block2 = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.1)
+        )
+
+    def forward(self, x):
+        # 初始特征提取
+        x = self.input_layer(x)
+        
+        # 残差连接
+        residual = x
+        x = self.res_block1(x)
+        x = x + residual  # 第一次残差连接
+        
+        residual = x
+        x = self.res_block2(x)
+        x = x + residual  # 第二次残差连接
+        
+        return x
+
+class ImprovedResNetActor(nn.Module):
+    """LSTM策略网络"""
+    def __init__(self, backbone, action_dim=action_dim):
+        super().__init__()
+        self.backbone = backbone
+        
+        # 策略头
+        self.policy_head = nn.Sequential(
+            nn.Linear(backbone.hidden_dim, backbone.hidden_dim//2),
+            nn.LayerNorm(backbone.hidden_dim//2),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(backbone.hidden_dim//2, action_dim)
+        )
+        
+    def forward(self, x, mask=None):
+        features = self.backbone(x)
+        logits = self.policy_head(features)
+        
+        # 应用动作掩码
+        if mask is not None:
+            logits = logits + (mask.float() - 1) * 1e9
+        
+        probs = F.softmax(logits, dim=-1)
+        return probs, logits
+
+class ImprovedResNetCritic(nn.Module):
+    """LSTM价值网络"""
+    def __init__(self, backbone):
+        super().__init__()
+        self.backbone = backbone
+        
+        # 价值头
+        self.value_head = nn.Sequential(
+            nn.Linear(backbone.hidden_dim, backbone.hidden_dim//2),
+            nn.LayerNorm(backbone.hidden_dim//2),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(backbone.hidden_dim//2, 1)
+        )
+        
+    def forward(self, x):
+        features = self.backbone(x)
+        value = self.value_head(features)
+        return value
+
+
+local_backbone = SharedBackbone().to(device)
+local_actor = ImprovedResNetActor(local_backbone).to(device)
+local_critic = ImprovedResNetCritic(local_backbone).to(device)
+
+    # 优化器设置
+    # 优化器设置 - 避免参数重复分组
+optimizer_params = [
+    {'params': local_backbone.parameters(), 'lr': 5e-5},
+    {'params': [p for n, p in local_actor.named_parameters() if not n.startswith('backbone.')], 'lr': 3e-5},
+    {'params': [p for n, p in local_critic.named_parameters() if not n.startswith('backbone.')], 'lr': 1e-4}
+]
+
+local_optimizer = optim.Adam(optimizer_params)
+
+def load_checkpoint(backbone, actor, critic, optimizer, model_path="models"):
+    model_files = Path(model_path)
+    
+    if model_files.exists():
+        print(f"找到checkpoint文件:{model_path}")
+    else:
+        print(f"未找到checkpoint文件:{model_path}")
+        return 0
+    
+    # 加载checkpoint到CPU，然后移动到GPU
+    checkpoint = torch.load(model_files, map_location='cpu', weights_only=True)
+    
+    # 加载模型权重并移动到GPU
+    backbone.load_state_dict(checkpoint['backbone_state_dict'])
+    backbone.to(device)
+    actor.load_state_dict(checkpoint['actor_state_dict'])
+    actor.to(device)
+    critic.load_state_dict(checkpoint['critic_state_dict'])
+    critic.to(device)
+    
+    # 加载优化器状态
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    
+    # 将优化器状态移动到GPU
+    for state in optimizer.state.values():
+        for k, v in state.items():
+            if isinstance(v, torch.Tensor):
+                state[k] = v.to(device)
+    
+    ep = checkpoint['episode']
+    print(f"加载checkpoint文件: {model_files}")
+    
+    # 设置模型为评估模式
+    backbone.eval()
+    actor.eval()
+    critic.eval()
+    
+    local_actor = actor
+    local_critic = critic
+    local_backbone = backbone
+
+    return ep
 
 class Player:
     def __init__(self, hand):
@@ -25,37 +238,47 @@ class Player:
         self.played_cards = []  # 记录已出的牌
         self.last_played_cards = []
 
+
 class GuandanGame:
-    def __init__(self, user_player=None, active_level=None, verbose=True , print_history=False):
+    def __init__(self, user_player=None, active_level=None, verbose=True, print_history=False, test=False, model_path="models/checkpoint_ep100.pth"):
         # **两队各自的级牌**
         self.print_history = print_history
-        self.active_level = active_level if active_level else random.choice(range(2, 15))
-        # 历史记录，记录最近 20 轮的出牌情况（每轮包含 4 个玩家的出牌）
+        self.active_level = active_level if active_level else random.choice(range(2, 15)) # 随机初始级牌(2-A)
+                
+        # 历史记录，记录最近 300 轮的出牌情况（每轮包含 4 个玩家的出牌）
         self.history = []
         # **只传当前局的有效级牌**
-        self.rules = Rules(self.active_level)
-        self.players = [Player(hand) for hand in deal_cards(shuffle_deck(create_deck()))]# 发牌
+        self.rules = Rules(self.active_level)  # 初始化规则引擎
+        self.players = [Player(hand) for hand in deal_cards(shuffle_deck(create_deck()))]  # 发牌
         self.current_player = 0  # 当前出牌玩家
         self.last_play = None  # 记录上一手牌
         self.last_player = -1  # 记录上一手是谁出的
         self.pass_count = 0  # 记录连续 Pass 的次数
         self.user_player = user_player - 1 if user_player else None  # 转换为索引（0~3）
         self.ranking = []  # 存储出完牌的顺序
-        self.recent_actions = [[],[],[],[]]
+        self.recent_actions = [[], [], [], []]
         self.verbose = verbose  # 控制是否输出文本
         self.team_1 = {0, 2}
         self.team_2 = {1, 3}
-        self.is_free_turn=True
+        self.is_free_turn = True
         self.jiefeng = False
         self.winning_team = 0
         self.is_game_over = False
         self.upgrade_amount = 0
-        self.current_round = 1  # 添加当前轮次计数器
-        self.last_play_type = None  # 记录上一手牌的类型
-        self.game_id = 0
-        self.cached_state = None  # 缓存状态向量
-        self.cached_state_tensor = None  # 缓存状态张量
-        self.cached_mask = None  # 缓存合法动作掩码
+        self.model_path=model_path
+        
+        # 设置测试模式
+        self.test = test
+        
+        self.backbone = local_backbone
+        self.actor = local_actor
+        self.critic = local_critic
+        
+        # 优化器分组设置
+        self.optimizer = local_optimizer
+            
+        # 使用传入的模型或加载新模型
+        #self.initial_ep = load_checkpoint(self.backbone, self.actor, self.critic, self.optimizer, self.model_path)
 
         # **手牌排序**
         for player in self.players:
@@ -63,88 +286,12 @@ class GuandanGame:
 
     def log(self, message):
         """控制是否打印消息"""
-        thread_id = threading.current_thread().ident
         if self.verbose:
-            print(f"GAME:{self.game_id} {message}")
+            print(message)
 
     def sort_cards(self, cards):
         """按牌的大小排序（从大到小）"""
         return sorted(cards, key=lambda card: self.rules.get_rank(card), reverse=True)
-
-    def map_cards_to_action(self, cards, level_rank):
-        """
-        从实际出过的牌中（带花色），动态判断其结构动作
-        """
-        point_count = defaultdict(int)
-        suits = set()
-
-        for card in cards:
-            # 提取点数和花色
-            point = self.rules.get_rank(card)
-            suits.add(card.split()[0])  # 假设花色在牌面字符串的开头
-            
-            # 处理级牌逻辑点
-            logic_point = 15 if point == level_rank else point
-            point_count[logic_point] += 1
-
-        # 构建点数序列（带重复）
-        logic_points = []
-        for pt, count in sorted(point_count.items()):
-            logic_points.extend([pt] * count)
-        sorted_points = sorted(point_count.keys())
-
-        # 1. 同花顺检测 (5张连续同花色)
-        if len(cards) == 5 and len(point_count) == 5:
-            if len(suits) == 1 and all(sorted_points[i+1] - sorted_points[i] == 1 for i in range(4)):
-                return {'type': 'straight_flush', 'points': sorted_points}
-
-        # 2. 普通顺子 (5张以上连续)
-        if len(cards) >= 5:
-            if all(sorted_points[i+1] - sorted_points[i] == 1 for i in range(len(sorted_points)-1)):
-                return {'type': 'sequence', 'points': sorted_points}
-
-        # 3. 连对 (3对以上连续)
-        if len(cards) >= 6 and len(cards) % 2 == 0:
-            if all(point_count[p] == 2 for p in sorted_points):
-                if all(sorted_points[i+1] - sorted_points[i] == 1 for i in range(len(sorted_points)-1)):
-                    return {'type': 'pair_chain', 'points': sorted_points}
-
-        # 4. 钢板 (2组以上连续三张)
-        if len(cards) >= 6 and len(cards) % 3 == 0:
-            if all(point_count[p] == 3 for p in sorted_points):
-                if all(sorted_points[i+1] - sorted_points[i] == 1 for i in range(len(sorted_points)-1)):
-                    return {'type': 'trio_chain', 'points': sorted_points}
-
-        # 5. 三带二
-        if len(cards) == 5:
-            counts = sorted(point_count.values())
-            if counts == [2, 3]:
-                trio_point = [p for p, cnt in point_count.items() if cnt == 3][0]
-                pair_point = [p for p, cnt in point_count.items() if cnt == 2][0]
-                return {'type': 'trio_pair', 'points': [trio_point, pair_point]}
-
-        # 6. 基础牌型
-        card_count = len(cards)
-        if card_count == 1:
-            return {'type': 'single', 'points': list(point_count.keys())}
-        elif card_count == 2:
-            if len(point_count) == 1:
-                return {'type': 'pair', 'points': list(point_count.keys())}
-        elif card_count == 3:
-            if len(point_count) == 1:
-                return {'type': 'trio', 'points': list(point_count.keys())}
-        elif card_count == 4:
-            if len(point_count) == 1:
-                return {'type': 'bomb', 'points': list(point_count.keys())}
-            elif len(point_count) == 2 and all(cnt == 2 for cnt in point_count.values()):
-                return {'type': 'bomb', 'points': list(point_count.keys())}  # 对子炸弹
-
-        # 7. 特殊炸弹
-        if '小王' in cards and '大王' in cards:
-            return {'type': 'joker_bomb', 'points': [20, 21]}  # 假设20是小王，21是大王
-
-        # 默认返回Pass
-        return {'type': 'PASS', 'points': []}
 
     def play_turn(self):
         """执行当前玩家的回合"""
@@ -152,19 +299,18 @@ class GuandanGame:
         player = self.players[self.current_player]  # 获取当前玩家对象
 
         # **计算当前仍有手牌的玩家数**
-        active_players = 4-len(self.ranking)
+        active_players = 4 - len(self.ranking)
 
         # **如果 Pass 的人 == "当前有手牌的玩家数 - 1"，就重置轮次**
         if self.pass_count >= (active_players - 1) and self.current_player not in self.ranking:
             if self.jiefeng:
                 first_player = self.ranking[-1]
-                # 接风玩家应为队友的下家
-                teammate = (first_player + 2) % 4
-                next_player = (teammate + 1) % 4
-                self.log(f"\n🆕 轮次重置！玩家 {next_player + 1} 接风。\n")
-                self.current_player = next_player
-                self.last_play = None
-                self.pass_count = 0
+                teammate = 2 if first_player == 0 else 0 if first_player == 2 else 3 if first_player == 1 else 1
+                self.log(f"\n🆕 轮次重置！玩家 {teammate + 1} 接风。\n")
+                self.recent_actions[self.current_player] = []  # 记录空列表
+                self.current_player = (self.current_player + 1) % 4
+                self.last_play = None  # ✅ 允许新的自由出牌
+                self.pass_count = 0  # ✅ Pass 计数归零
                 self.is_free_turn = True
                 self.jiefeng = False
             else:
@@ -173,19 +319,28 @@ class GuandanGame:
                 self.pass_count = 0  # ✅ Pass 计数归零
                 self.is_free_turn = True
 
-        result = self.ai_play(player)
-        
+        if self.user_player == self.current_player:
+            result = self.user_play(player)
+        else:
+            if self.test and (self.current_player == 0 or self.current_player == 2):  #team_1 0,2  team_2 1,3 
+                result = self.actor_play(player)
+            else:
+                result = self.ai_play(player)
+
         # 记录历史（每轮结束时）
-        if self.current_player == 0:
-            round_history = [self.recent_actions[i] for i in range(4)]
+        if self.current_player == 0 and any(action != ['None'] for action in self.recent_actions):
+            round_history = [self.recent_actions[i].copy() for i in range(4)]
             self.history.append(round_history)
-            self.recent_actions=[['None'],['None'],['None'],['None']]
+                
+            # 重置最近动作（使用深拷贝避免引用问题）
+            self.recent_actions = [['None'] for _ in range(4)]
             
             if len(self.history) > 20:
                 self.history.pop(0)
-                
+            
         return result
-    
+
+
     def get_possible_moves(self, player_hand):
         """获取所有可能的合法出牌，包括各种牌型：单张、对子、顺子、连对、钢板、三带二等，并支持级牌红桃作为赖子"""
         
@@ -538,7 +693,7 @@ class GuandanGame:
             cards.append(wildcards_copy.pop(0))
         
         return cards if len(cards) == count else None
-
+    
     def ai_play(self, player):
         """AI 出牌逻辑（随机选择合法且能压过上家的出牌）"""
 
@@ -640,14 +795,252 @@ class GuandanGame:
                                     
         return game_over
 
+    def actor_play(self, player):
+        combos = []
+        chosen_move_temp = 0
+        player = self.players[self.current_player] 
+        action_id = 0
+
+        # 0. 直接计算状态和掩码（移除缓存机制）
+        state = self._get_obs()
+    
+        # 创建状态张量并移到GPU
+        state_tensor = torch.tensor(state, dtype=torch.float32, device=device).unsqueeze(0)
+        
+        # 创建合法动作掩码
+        mask_tensor = torch.zeros(action_dim, dtype=torch.float32, device=device)
+        
+        # 1. 获取合法动作列表
+        combos = self.get_possible_moves(player.hand)
+        
+        # 创建临时的action_id_val与combos对照表
+        action_id_to_combo_map = {}
+        if combos:
+            # 循环计算每个combo对应的action_id
+            for combo in combos:
+                action_id_val= self.rules.cards_to_mod_id(combo[0])
+                #action_id_val = self.rules.PLAY_MAPPING.get(combo[1], -1)
+                #if action_id_val != -1:
+                #    action_id_val = action_id_val*10000 + combo[2]
+                #    action_id_val = action_id_val % 1023
+                
+                # 添加到对照表
+                if 0 <= action_id_val < action_dim:
+                    # 使用combo[0]作为键值（出牌组合）
+                    action_id_to_combo_map[action_id_val] = combo[0]
+                    mask_tensor[action_id_val] = 1.0
+        else:
+            # 没有合法动作时只允许Pass
+            mask_tensor[0] = 1.0
+            action_id_to_combo_map[0] = []  # Pass动作
+        
+        # 2. 模型推理获取动作概率
+        probs, logits = self.actor(state_tensor, mask_tensor)
+        action_id = torch.multinomial(probs, 1).item()
+
+        if action_id in action_id_to_combo_map:
+            chosen_move = action_id_to_combo_map[action_id]
+                                
+            if not chosen_move:
+                self.log(f"玩家 {self.current_player + 1} Pass")
+                self.pass_count += 1
+                self.recent_actions[self.current_player] = ['Pass']  # 记录 Pass
+            else:
+                # 如果 chosen_move 不为空，继续进行正常的出牌逻辑
+                self.last_play = chosen_move
+                self.last_player = self.current_player
+                for card in chosen_move:
+                    player.played_cards.append(card)
+                    player.hand.remove(card)
+                self.log(f"玩家 {self.current_player + 1} 出牌: {' '.join(chosen_move)}")
+                self.recent_actions[self.current_player] = list(chosen_move)  # 记录出牌
+                self.jiefeng = False
+                if not player.hand:  # 玩家出完牌
+                    self.log(f"🎉 玩家 {self.current_player + 1} 出完所有牌！\n")
+                    self.ranking.append(self.current_player)
+                    if len(self.ranking) <= 2:
+                        self.jiefeng = True
+
+                self.pass_count = 0
+                if not player.hand:
+                    self.pass_count -= 1
+
+                if self.is_free_turn:
+                    self.is_free_turn = False
+        else:
+            self.log(f"玩家 {self.current_player + 1} Pass")
+            self.pass_count += 1
+            self.recent_actions[self.current_player] = ['Pass']  # 记录 Pass
+        player.last_played_cards = self.recent_actions[self.current_player]
+        self.current_player = (self.current_player + 1) % 4
+        return self.check_game_over()
+
+
+    def user_play(self, player):
+        """用户出牌逻辑"""
+        if self.current_player in self.ranking:
+            self.recent_actions[self.current_player] = []  # 记录空列表
+            self.current_player = (self.current_player + 1) % 4
+            return self.check_game_over()
+
+        self.get_ai_suggestions(player)
+        while True:
+            self.show_user_hand()  # 显示手牌
+            choice = input("\n请选择要出的牌（用空格分隔），或直接回车跳过（PASS）： ").strip()
+
+            # **用户选择 PASS**
+            if choice == "" or choice.lower() == "pass":
+                if self.is_free_turn:
+                    print("❌ 你的输入无效，自由回合必须出牌！")
+                    continue
+                print(f"玩家 {self.current_player + 1} 选择 PASS")
+                self.pass_count += 1
+                self.recent_actions[self.current_player] = ['Pass']  # ✅ 记录 PASS
+                break
+
+            # **解析用户输入的牌**
+            selected_cards = choice.split()
+
+            # **检查牌是否在手牌中**
+            if not all(card in player.hand for card in selected_cards):
+                print("❌ 你的输入无效，请确保牌在你的手牌中！")
+                continue  # 重新输入
+
+            # **检查牌是否合法**
+            if not self.rules.is_valid_play(selected_cards):
+                print("❌ 你的出牌不符合规则，请重新选择！")
+                continue  # 重新输入
+
+            last_action = self.map_cards_to_action(self.last_play, M, self.active_level)
+            chosen = self.map_cards_to_action(selected_cards, M, self.active_level)
+            # **检查是否能压过上一手牌**
+            if not self.can_beat(chosen, last_action):
+                print("❌ 你的牌无法压过上一手牌，请重新选择！")
+                continue  # 重新输入
+
+            # **成功出牌**
+            for card in selected_cards:
+                player.played_cards.append(card)
+                player.hand.remove(card)  # 从手牌中移除
+            self.last_play = selected_cards  # 记录这次出牌
+            self.last_player = self.current_player  # 记录是谁出的
+            self.recent_actions[self.current_player] = list(selected_cards)  # 记录出牌历史
+            self.jiefeng = False
+            print(f"玩家 {self.current_player + 1} 出牌: {' '.join(selected_cards)}")
+
+            # **如果手牌为空，玩家出完所有牌**
+            if not player.hand:
+                print(f"🎉 玩家 {self.current_player + 1} 出完所有牌！\n")
+                self.ranking.append(self.current_player)
+                if len(self.ranking) <= 2:
+                    self.jiefeng = True
+
+            # **出牌成功，Pass 计数归零**
+            self.pass_count = 0
+            if not player.hand:
+                self.pass_count -= 1
+            if self.is_free_turn:
+                self.is_free_turn = False
+            break
+
+        # **切换到下一个玩家**
+        player.last_played_cards = self.recent_actions[self.current_player]
+        self.current_player = (self.current_player + 1) % 4
+
+        return self.check_game_over()
+
+    def get_ai_suggestions(self, player):
+        # --- Get AI Suggestions ---
+        combos = []
+        chosen_move_temp = 0
+        player = self.players[0]
+        action_id = 0
+
+        # 0. 直接计算状态和掩码（移除缓存机制）
+        state = self._get_obs()
+    
+        # 创建状态张量并移到GPU
+        state_tensor = torch.tensor(state, dtype=torch.float32, device=device).unsqueeze(0)
+        
+        # 创建合法动作掩码
+        mask_tensor = torch.zeros(action_dim, dtype=torch.float32, device=device)
+        
+        # 1. 获取合法动作列表
+        combos = self.get_possible_moves(player.hand)
+        
+        # 创建临时的action_id_val与combos对照表
+        action_id_to_combo_map = {}
+        if combos:
+            # 循环计算每个combo对应的action_id
+            for combo in combos:
+                action_id_val = self.rules.PLAY_MAPPING.get(combo[1], -1)
+                if action_id_val != -1:
+                    action_id_val = action_id_val*10000 + combo[2]
+                    action_id_val = action_id_val % 1023
+                
+                # 添加到对照表
+                if 0 <= action_id_val < action_dim:
+                    # 使用combo[0]作为键值（出牌组合）
+                    action_id_to_combo_map[action_id_val] = combo[0]
+                    mask_tensor[action_id_val] = 1.0
+        else:
+            # 没有合法动作时只允许Pass
+            mask_tensor[0] = 1.0
+            action_id_to_combo_map[0] = []  # Pass动作
+
+        # Ensure the actor model is accessible, e.g., self.actor if it's part of the class
+        # Or just 'actor' if it's loaded globally as in your original file example
+        #global actor  # Assuming actor is loaded globally
+        with torch.no_grad():  # Disable gradient calculation for inference
+            # Note: The actor output 'probs' is already after a softmax over ALL actions
+            all_probs, _ = self.actor(state_tensor, mask_tensor)  # 解包元组，只取概率部分
+
+        # Get top 3 suggestions (indices and their original probabilities)
+        # We use the original probabilities from the full softmax to find the top K
+        top_k_orig_probs, top_k_indices = torch.topk(all_probs, k=3, dim=-1)
+
+        # --- Apply Softmax to ONLY the top K probabilities for relative comparison ---
+        # Detach is good practice here although not strictly necessary with no_grad()
+        # We only apply softmax if there are positive probabilities to normalize
+        valid_top_k_probs = top_k_orig_probs[top_k_orig_probs > 0]  # Filter out zero probabilities if any
+        if valid_top_k_probs.numel() > 0:
+            # Apply softmax to the non-zero probabilities of the top k actions
+            normalized_top_k_probs_tensor = F.softmax(valid_top_k_probs, dim=-1)
+            # Create a placeholder for normalized probabilities matching top_k_indices size
+            normalized_top_k_probs = torch.zeros_like(top_k_orig_probs)
+            # Fill in the normalized probabilities where the original probs were positive
+            normalized_top_k_probs[top_k_orig_probs > 0] = normalized_top_k_probs_tensor
+        else:
+            # Handle case where all top k probabilities are zero (e.g., mask filtered everything)
+            normalized_top_k_probs = torch.zeros_like(top_k_orig_probs)
+
+        print("\n--- AI 建议 ---")
+        for i in range(top_k_indices.size(1)):
+            action_id = top_k_indices[0, i].item()
+            # Use the normalized probability for display
+            normalized_prob = normalized_top_k_probs[0, i].item()
+
+            # We still check original probability > 0 to decide if it was a valid move initially
+            if top_k_orig_probs[0, i].item() > 0:
+                points_str = action_id_to_combo_map[action_id]
+                # Display the normalized probability
+                print(f"建议 {i + 1}: {points_str} - 相对概率: {normalized_prob:.2%}")
+            else:
+                # If original probability was 0, it wasn't a valid move
+                print(f"建议 {i + 1}: (无有效动作)")
+
+        print("-----------------------------")
+
     def check_game_over(self):
         """检查游戏是否结束"""
         # **如果有 2 个人出完牌，并且他们是同一队伍，游戏立即结束**
         if len(self.ranking) >= 2:
-            first_player, second_player = self.ranking[0], self.ranking[1]
-            if (first_player in self.team_1 and second_player in self.team_1) or (
-                    first_player in self.team_2 and second_player in self.team_2):
-                self.ranking.extend(i for i in range(4) if i not in self.ranking)  # 剩下的按出牌顺序补全
+            # 检查前两名是否同队
+            if (self.ranking[0] in self.team_1 and self.ranking[1] in self.team_1) or (
+                    self.ranking[0] in self.team_2 and self.ranking[1] in self.team_2):
+                # 补全剩余玩家排名
+                remaining_players = [i for i in range(4) if i not in self.ranking]
+                self.ranking.extend(remaining_players)
                 self.update_level()
                 self.is_game_over = True
                 return True
@@ -666,6 +1059,7 @@ class GuandanGame:
         first_player = self.ranking[0]  # 第一个打完牌的玩家
         winning_team = 1 if first_player in self.team_1 else 2
         self.winning_team = winning_team
+        
         # 确定队友
         teammate = 2 if first_player == 0 else 0 if first_player == 2 else 3 if first_player == 1 else 1
 
@@ -696,10 +1090,29 @@ class GuandanGame:
             self.log(f"{ranks[i]}：玩家 {player + 1}")
         self.log("局终\n")
 
+    def reset_game(self):
+        """重置游戏状态，重新洗牌和发牌"""
+        # 重置游戏状态
+        self.history = []
+        self.players = [Player(hand) for hand in deal_cards(shuffle_deck(create_deck()))]
+        self.current_player = 0
+        self.last_play = None
+        self.last_player = -1
+        self.pass_count = 0
+        self.ranking = []
+        self.recent_actions = [[], [], [], []]
+        self.is_free_turn = True
+        self.jiefeng = False
+        self.is_game_over = False
+        
+        # 重新排序手牌
+        for player in self.players:
+            player.hand = self.sort_cards(player.hand)
+
     def play_game(self):
         """执行一整局游戏"""
-        self.log(f"\n🎮 游戏开始！当前级牌：{RANKS[self.active_level - 2]}")
-        self.current_round += 1
+        self.log(f"\n🎮 游戏开始！当前级牌：{self.active_level}")
+
         while True:
             if self.play_turn():
                 if self.current_player != 0:
@@ -708,6 +1121,8 @@ class GuandanGame:
                 if self.print_history:
                     for i in range(len(self.history)):
                         self.log(self.history[i])
+                # 游戏结束后重置牌局
+                #self.reset_game()
                 break
 
     def show_user_hand(self):
@@ -752,7 +1167,7 @@ class GuandanGame:
         obs[offset] = self.active_level / 14.0  # 归一化到0-1范围
         offset += 1
 
-        # 7️⃣ 最近 5 步动作历史 (108 * 5 = 540) 2160
+        # 7️⃣ 最近 20 步动作历史 (108 * 5 = 2160)2160
         HISTORY_LEN = 5
         history_flat = []
 
@@ -782,23 +1197,6 @@ class GuandanGame:
 
         assert offset == 1430, f"⚠️ offset 计算错误: 预期 3050, 实际 {offset}"
         return obs
-
-    def compute_reward(self):
-        """计算当前的奖励"""
-        if self.check_game_over():
-            # 如果游戏结束，给胜利队伍正奖励，失败队伍负奖励
-            return 100 if self.winning_team == 1 else -100
-
-        # **鼓励 AI 先出完手牌**
-        hand_size = len(self.players[self.current_player].hand)
-        return -hand_size  # 手牌越少，奖励越高
-
-    def card_to_index(self, card):
-        """
-        牌面转换为索引
-        """
-        card_map = {card: i for i, card in enumerate(self.rules.CARD_RANKS.keys())}
-        return card_map.get(card, 0)
 
     def level_card_to_index(self, level_card):
         """
@@ -834,15 +1232,127 @@ class GuandanGame:
         """
         return [1, 0, 0]  # 目前默认"不能辅助"，后续可修改逻辑
 
-    def get_play_value(self, cards):
-        """获取牌点数（最大值）"""
-        ranks = [self.rules.get_rank(card) for card in cards]
-        return max(ranks)
+
+def test_multiple_models():  # 批量测试不同训练阶段的模型   # 统计胜率、名次等指标
+    # 测试的episode范围
+    start_ep = 6100
+    end_ep = 8400
+    step = 200
+    test_eps = range(start_ep, end_ep + step, step)
+
+    # 存储结果的字典
+    results = {
+        'episodes': [],
+        'win_rates': [],
+        'first_hand_rates': [],
+        'yi_rates': [],
+        'er_rates': [],
+        'san_rates': []
+    }
+
+    n = 200 # 每个模型测试的场次
+            
+    for model_ep in test_eps:
+
+        win = 0
+        first = 0
+        yi = 0
+        er = 0
+        san = 0
+
+        # 确保在测试开始时设置随机种子
+        torch.manual_seed(420)
+        random.seed(420)
+        np.random.seed(420)
+    
+        print(f"测试模型 checkpoint_ep{model_ep}.pth 开始...") #team_1 0,2  team_2 1,3         
+        #加载新模型
+        load_checkpoint(local_backbone, local_actor, local_critic, local_optimizer, model_path=f"models/checkpoint_ep{model_ep}.pth")
         
-    def get_play_value_min(self, cards):
-        """获取牌点数（最小值）"""
-        ranks = [self.rules.get_rank(card) for card in cards]
-        return min(ranks)
+        for _ in range(n):
+            try:
+                game = GuandanGame(user_player=None, active_level=None,verbose=True, print_history=True,test=True,model_path=f"models/checkpoint_ep{model_ep}.pth")
+                game.play_game()
+
+                if game.winning_team == 1:
+                    win += 1
+                    if game.upgrade_amount == 3:
+                        yi += 1
+                    elif game.upgrade_amount == 2:
+                        er += 1
+                    else:
+                        san += 1
+
+                if game.ranking[0] == 0:
+                    first += 1
+                    
+                game.reset_game()
+                
+            except Exception as e:
+                print(f"测试模型 checkpoint_ep{model_ep}.pth 时出错: {str(e)}")
+                continue
+
+        # 存储结果
+        results['episodes'].append(model_ep)
+        results['win_rates'].append(win / n * 100)
+        results['first_hand_rates'].append(first / n * 100)
+        results['yi_rates'].append(yi / win * 100 if win > 0 else 0)
+        results['er_rates'].append(er / win * 100 if win > 0 else 0)
+        results['san_rates'].append(san / win * 100 if win > 0 else 0)
+        print(f"测试模型 checkpoint_ep{model_ep}.pth结束")
+
+        # 打印所有模型的汇总结果
+        print("\n\n" + "=" * 80)
+        print("所有模型测试结果汇总（团队）:")
+        print("=" * 80)
+        print(
+            f"{'Episode':<10}{'胜率(%)':<10}{'第一手出完率(%)':<18}{'一二名(%)':<15}{'一三名(%)':<15}{'一四名(%)':<15}")
+        print("-" * 80)
+        for i in range(len(results['episodes'])):
+            ep = results['episodes'][i]
+            print(f"{ep:<10}{results['win_rates'][i]:<10.2f}{results['first_hand_rates'][i]:<18.2f}"
+                f"{results['yi_rates'][i]:<15.2f}{results['er_rates'][i]:<15.2f}{results['san_rates'][i]:<15.2f}")
+
+        print(results)
+
+
 if __name__ == "__main__":
-    game = GuandanGame(user_player=None,active_level=None,verbose=True,print_history=True)
-    game.play_game()
+    #model_ep = 2000
+    #load_checkpoint(local_backbone, local_actor, local_critic, local_optimizer, model_path=f"models/checkpoint_ep{model_ep}.pth")
+    #game = GuandanGame(user_player=1, active_level=None, verbose=True, print_history=True)
+    #game.play_game()
+    test_multiple_models()
+
+
+
+'''
+根据代码中的训练配置和掼蛋游戏的复杂性，训练轮次建议如下：
+
+1. 基础训练阶段（0-5,000轮）
+
+模型开始学习基本出牌规则和简单牌型
+主要掌握单牌、对子、三张等基础牌型
+预期效果：Pass率显著下降，能完成30%左右的合法出牌
+2. 中级训练阶段（5,000-15,000轮）
+
+开始学习组合牌型（三带二、连对等）
+炸弹使用策略逐渐形成
+预期效果：能处理70%常见牌型，简单配合策略出现
+3. 高级训练阶段（15,000-30,000轮）
+
+掌握所有复杂牌型（飞机带翅膀、逢人配等）
+形成初步的战术配合和牌力评估能力
+预期效果：能达到业余高手水平，胜率超过规则型AI
+4. 精调阶段（30,000+轮）
+
+优化策略细节和特殊情况处理
+形成稳定的风格和高级战术
+预期效果：接近职业选手水平，春天率显著提升
+关键训练指标观察点：
+
+5,000轮：Pass率应降至30%以下
+10,000轮：炸弹使用合理率超过50%
+20,000轮：复杂牌型识别率超过80%
+30,000轮：团队配合动作占比超过40%
+建议每5,000轮进行一次模型评估，当连续3次评估胜率提升小于2%时，可考虑停止训练。完整训练通常需要2-3周（使用单卡GPU）。
+'''
